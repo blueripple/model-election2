@@ -811,9 +811,9 @@ stateChart jsonLocations chartID title modelType vc vap tgtM tableRowsByModel = 
 --      toData kltr = fmap ($ kltr) $ fmap colData [0..(n-1)]
       jsonRows = FL.fold (VJ.rowsToJSON colData [] Nothing) $ concat $ fmap (\(s, fr) -> fmap (s,) $ FL.fold FL.list fr) tableRowsByModel
   jsonFilePrefix <- K.getNextUnusedId $ ("statePSWithTargets_" <> chartID)
-  BRHJ.addJSON jsonLocations  jsonFilePrefix jsonRows
+  jsonUrl <- BRHJ.addJSON jsonLocations jsonFilePrefix jsonRows
 
-  let vlData = GV.dataFromUrl (BRHJ.jsonUrl jsonLocations) [GV.JSON "values"]
+  let vlData = GV.dataFromUrl jsonUrl [GV.JSON "values"]
   --
       encY = case tgtM of
         Nothing -> GV.position GV.Y [GV.PName modelType, GV.PmType GV.Quantitative]
@@ -856,9 +856,9 @@ categoryChart jsonLocations title chartID vc catSortM sourceSortM catText tableR
 --      toData kltr = fmap ($ kltr) $ fmap colData [0..(n-1)]
       jsonRows = FL.fold (VJ.rowsToJSON colData [] Nothing) $ concat $ fmap (\(s, fr) -> fmap (s,) $ FL.fold FL.list fr) tableRowsByModel
   jsonFilePrefix <- K.getNextUnusedId $ ("statePSWithTargets_" <> chartID)
-  BRHJ.addJSON jsonLocations jsonFilePrefix jsonRows
+  jsonUrl <- BRHJ.addJSON jsonLocations jsonFilePrefix jsonRows
 
-  let vlData = GV.dataFromUrl (BRHJ.jsonUrl jsonLocations) [GV.JSON "values"]
+  let vlData = GV.dataFromUrl jsonUrl [GV.JSON "values"]
   --
       xScale = GV.PScale [GV.SZero False]
       xSort = case sourceSortM of
