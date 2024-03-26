@@ -172,8 +172,10 @@ instance (FS.RecFlat (PSDataR k)
   encode (PSData c) = Flat.encode (FS.SFrame c)
   decode = (\c -> PSData (FS.unSFrame c)) <$> Flat.decode
 
-acsByStatePS :: (K.KnitEffects r, BRCC.CacheEffects r) => K.Sem r (K.ActionWithCacheTime r (PSData '[BR.Year, GT.StateAbbreviation]))
-acsByStatePS = fmap (PSData . fmap F.rcast) <$> DDP.cachedACSa5ByState ACS.acs1Yr2012_21 2021
+acsByStatePS :: forall r . (K.KnitEffects r, BRCC.CacheEffects r) => K.Sem r (K.ActionWithCacheTime r (PSData '[BR.Year, GT.StateAbbreviation]))
+acsByStatePS =
+  let (srcWindow, cachedSrc) = ACS.acs1Yr2012_22 @r
+  in fmap (PSData . fmap F.rcast) <$> DDP.cachedACSa5ByState srcWindow cachedSrc 2022
 
 data ModelData lk =
   ModelData
@@ -340,7 +342,7 @@ cpsAddDensity acs cps = do
   when (not $ null missing) $ K.knitError $ "cpsAddDensity: Missing keys in CPS/ACS join: " <> show missing
   pure $ fmap F.rcast joined
 
-cachedPreppedCPS ::  (K.KnitEffects r, BRCC.CacheEffects r)
+cachedPreppedCPS :: forall r . (K.KnitEffects r, BRCC.CacheEffects r)
                  => Either Text Text
                  -> K.ActionWithCacheTime r (F.FrameRec (StateKeyR V.++ DCatsR V.++ CountDataR))
                  -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec CPSByStateR))
@@ -348,7 +350,8 @@ cachedPreppedCPS cacheE cps_C = do
   cacheKey <- case cacheE of
     Left ck -> BRCC.clearIfPresentD ck >> pure ck
     Right ck -> pure ck
-  acs_C <- DDP.cachedACSa5ByState ACS.acs1Yr2010_20 2020 -- so we get density from the same year as the CPS data
+  let (srcWindow, cachedSrc) = ACS.acs1Yr2012_22 @r
+  acs_C <- DDP.cachedACSa5ByState srcWindow cachedSrc 2020 -- so we get density from the same year as the CPS data
   let only2020 = F.filterFrame ((== 2020) . view BR.year)
   BRCC.retrieveOrMakeFrame cacheKey ((,) <$> acs_C <*> fmap only2020 cps_C) $ uncurry cpsAddDensity
 
@@ -483,7 +486,7 @@ cesAddHouseIncumbency2 ces = K.wrapPrefix "Election2.DataPrep" $ do
   pure $ fmap (F.rcast . g) ces
 
 
-cachedPreppedCES :: (K.KnitEffects r, BRCC.CacheEffects r)
+cachedPreppedCES :: forall r . (K.KnitEffects r, BRCC.CacheEffects r)
                  => Either Text Text
                  -> K.ActionWithCacheTime r (F.FrameRec (CDKeyR V.++ DCatsR V.++ CountDataR V.++ PrefDataR))
                  -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec (CESByR CDKeyR)))
@@ -491,14 +494,15 @@ cachedPreppedCES cacheE ces_C = do
   cacheKey <- case cacheE of
     Left ck -> BRCC.clearIfPresentD ck >> pure ck
     Right ck -> pure ck
-  acs_C <- fmap (F.filterFrame ((== DT.Citizen) . view DT.citizenC)) <$> DDP.cachedACSa5ByCD ACS.acs1Yr2010_20 2020 Nothing -- so we get density from same year as survey
+  let (srcWindow, cachedSrc) = ACS.acs1Yr2012_22 @r
+  acs_C <- fmap (F.filterFrame ((== DT.Citizen) . view DT.citizenC)) <$> DDP.cachedACSa5ByCD srcWindow cachedSrc 2020 Nothing -- so we get density from same year as survey
   houseElections_C <- fmap (F.filterFrame ((>= 2008) . view BR.year)) <$> BR.houseElectionsWithIncumbency
   let deps = (,,) <$> ces_C <*> acs_C <*> houseElections_C
   BRCC.retrieveOrMakeFrame cacheKey deps $ \(ces, acs, elex) -> do
     cesWD <- cesAddDensity CCES.CES2020 acs ces
     cesAddHouseIncumbency CCES.CES2020 elex cesWD
 
-cachedPreppedCES2 :: (K.KnitEffects r, BRCC.CacheEffects r)
+cachedPreppedCES2 :: forall r . (K.KnitEffects r, BRCC.CacheEffects r)
                   => Either Text Text
                   -> K.ActionWithCacheTime r (F.FrameRec (StateKeyR V.++ DCatsR V.++ CountDataR V.++ PrefDataR))
                   -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec (CESByR StateKeyR)))
@@ -506,7 +510,8 @@ cachedPreppedCES2 cacheE ces_C = do
   cacheKey <- case cacheE of
     Left ck -> BRCC.clearIfPresentD ck >> pure ck
     Right ck -> pure ck
-  acs_C <- fmap (F.filterFrame ((== DT.Citizen) . view DT.citizenC)) <$> DDP.cachedACSa5ByState ACS.acs1Yr2010_20 2020 -- so we get density from same year as survey
+  let (srcWindow, cachedSrc) = ACS.acs1Yr2012_22 @r
+  acs_C <- fmap (F.filterFrame ((== DT.Citizen) . view DT.citizenC)) <$> DDP.cachedACSa5ByState srcWindow cachedSrc 2020 -- so we get density from same year as survey
 --  houseElections_C <- fmap (F.filterFrame ((>= 2008) . view BR.year)) <$> BR.houseElectionsWithIncumbency
   let deps = (,) <$> ces_C <*> acs_C -- <*> houseElections_C
   BRCC.retrieveOrMakeFrame cacheKey deps $ \(ces, acs) -> do

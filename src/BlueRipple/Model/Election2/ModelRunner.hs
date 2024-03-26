@@ -663,7 +663,8 @@ psBy :: forall ks r .
       -> K.Sem r (F.FrameRec (ks V.++ [DT.PopCount, ModelCI]))
 psBy runModel = do
     (MC.PSMap psMap) <- K.ignoreCacheTimeM runModel
-    pcMap <- DDP.cachedACSa5ByState ACS.acs1Yr2012_21 2021 >>= popCountByMap @ks
+    let (srcWindow, cachedSrc) = ACS.acs1Yr2012_22
+    pcMap <- DDP.cachedACSa5ByState srcWindow cachedSrc 2022 >>= popCountByMap @ks
     let whenMatched :: F.Record ks -> MT.ConfidenceInterval -> Int -> Either Text (F.Record  (ks V.++ [DT.PopCount, ModelCI]))
         whenMatched k t p = pure $ k F.<+> (p F.&: t F.&: V.RNil :: F.Record [DT.PopCount, ModelCI])
         whenMissingPC k _ = Left $ "psBy: " <> show k <> " is missing from PopCount map."
