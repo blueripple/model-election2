@@ -31,6 +31,7 @@ import qualified BlueRipple.Data.Types.Demographic as DT
 import qualified BlueRipple.Data.Types.Geographic as GT
 import qualified BlueRipple.Data.Types.Modeling as MT
 import qualified BlueRipple.Model.Election2.ModelCommon as MC
+import qualified BlueRipple.Model.StanTools as MST
 
 import qualified Knit.Report as K hiding (elements)
 
@@ -717,8 +718,9 @@ runModel :: forall l k lk r a b .
          -> K.Sem r (K.ActionWithCacheTime r (MC.PSMap l MT.ConfidenceInterval, Maybe ModelParameters))
 runModel modelDirE modelName gqName runConfig config modelData_C psData_C = do
   let dataName = configText config
-      runnerInputNames = SC.RunnerInputNames
-                         ("br-2023-electionModel/stan/" <> modelName <> "/")
+  stanDir <- K.liftKnit MST.stanDir >>= K.knitMaybe "runModel: empty stanDir!" . BRCC.insureFinalSlash
+  let runnerInputNames = SC.RunnerInputNames
+                         (stanDir <> modelName <> "/")
                          (configText config)
                          (Just $ SC.GQNames "GQ" (dataName <> "_" <> gqName))
                          dataName
