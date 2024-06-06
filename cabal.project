@@ -34,5 +34,6 @@ import: ../cabal_repo_imports/Frames-hvega.project
 import: ../cabal_repo_imports/data-science-utils.project
 import: ../cabal_repo_imports/hvega-utils.project
 import: ../cabal_repo_imports/map-reduce-folds.project
+import: ../cabal_repo_imports/Frames-map-reduce.project
 import: ../cabal_repo_imports/heidi.project
 import: ../cabal_repo_imports/hTensor.project

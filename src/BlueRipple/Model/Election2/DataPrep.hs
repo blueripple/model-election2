@@ -50,7 +50,6 @@ import qualified BlueRipple.Data.LoadersCore as BRLC
 import Control.Lens (view, (^.))
 import qualified Control.Foldl as FL
 import qualified Control.Foldl.Statistics as FLS
-import qualified Control.MapReduce as FMR
 import qualified Data.Csv as CSV
 import qualified Data.Map.Strict as M
 import qualified Data.List.NonEmpty as NE
@@ -307,6 +306,7 @@ summaryMeanStd = (,) <$> meanFld <*> stdFld
 withZeros :: forall outerK ks .
              (
                (ks V.++ [DT.PopCount, DT.PWPopPerSqMile]) F.⊆ (outerK V.++ ks V.++ [DT.PopCount, DT.PWPopPerSqMile])
+             , FI.RecVec ((outerK V.++ ks) V.++ [DT.PopCount, DT.PWPopPerSqMile])
              , ks F.⊆ (ks V.++ [DT.PopCount, DT.PWPopPerSqMile])
              , FI.RecVec (ks V.++ [DT.PopCount, DT.PWPopPerSqMile])
              , Keyed.FiniteSet (F.Record ks)
