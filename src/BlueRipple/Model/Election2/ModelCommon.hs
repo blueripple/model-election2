@@ -4,9 +4,11 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PolyKinds #-}
@@ -108,25 +110,43 @@ data ModelConfig (b :: TE.EType) =
 modelConfigText :: ModelConfig b -> Text
 modelConfigText (ModelConfig sa alphas dmr) =  aggregationText sa <> "_" <> alphasText alphas <> "_" <> dmr.dmName
 
-data RegistrationConfig a b =
-  RegistrationConfig
+data ModelCategory = Reg | Vote
+
+data ActionConfig (c :: ModelCategory) a b =
+  ActionConfig
   {
-    rcSurvey :: TurnoutSurvey a
-  , rcModelConfig :: ModelConfig b
+    acSurvey :: ActionSurvey a
+  , acModelConfig :: ModelConfig b
   }
 
-data TurnoutConfig a b =
-  TurnoutConfig
-  {
-    tcSurvey :: TurnoutSurvey a
-  , tcModelConfig :: ModelConfig b
-  }
-
-data PrefConfig b =
+data PrefConfig (c :: ModelCategory) b =
   PrefConfig
   {
     pcModelConfig :: ModelConfig b
   }
+
+-- types to terms
+class ModelCategoryV a where
+  modelCategory :: ModelCategory
+
+instance ModelCategoryV Reg where
+  modelCategory = Reg
+
+instance ModelCategoryV Vote where
+  modelCategory = Vote
+
+instance ModelCategoryV (ActionConfig Reg a b) where
+  modelCategory = Reg
+
+instance ModelCategoryV (ActionConfig Vote a b) where
+  modelCategory = Vote
+
+
+instance ModelCategoryV (PrefConfig Reg b) where
+  modelCategory = Reg
+
+instance ModelCategoryV (PrefConfig Vote b) where
+  modelCategory = Vote
 
 type GroupsR = GT.StateAbbreviation ': DP.DCatsR
 
@@ -153,20 +173,6 @@ surveyDataGroupBuilder :: (Foldable g, Typeable rs, GroupsR F.⊆ rs)
                        => g Text -> Text -> SMB.ToFoldable md (F.Record rs) -> SMB.StanGroupBuilderM md gq ()
 surveyDataGroupBuilder states sName sTF = SMB.addModelDataToGroupBuilder sName sTF >>= addGroupIndexesAndIntMaps (groups states)
 
-{-
-stateTargetsGroupBuilder :: (Foldable g, F.ElemOf rs GT.StateAbbreviation
-                            )
-                         => g Text -> SMB.RowTypeTag (F.Record rs) -> SMB.StanGroupBuilderM md gq ()
-stateTargetsGroupBuilder states rtt =
-  SMB.addGroupIndexForData stateG rtt
-  $ SMB.makeIndexFromFoldable show (view GT.stateAbbreviation) states
-
-acsDataGroupBuilder :: [DSum.DSum SMB.GroupTypeTag (SG.GroupFromData (F.Record GroupsR))]
-                    ->  SMB.StanGroupBuilderM (DP.ModelData lk) gq ()
-acsDataGroupBuilder groups' = do
-   acsDataTag <- SMB.addModelDataToGroupBuilder "ACSData" (SMB.ToFoldable DP.acsData)
-   SG.addModelIndexes acsDataTag F.rcast groups'
--}
 -- NB: often l ~ k, e.g., for predicting district turnout/preference
 -- But say you want to predict turnout by race, nationally.
 -- Now l ~ '[Race5C]
@@ -198,11 +204,11 @@ tDesignMatrixRow_d = DM.DesignMatrixRow "d" [dRP]
   where
     dRP = DM.DesignMatrixRowPart "logDensity" 1 (VU.singleton . safeLog . view DT.pWPopPerSqMile)
 
-data ModelType = TurnoutMT | RegistrationMT | PreferenceMT | FullMT deriving stock (Eq, Ord, Show)
+data ModelType = ActionMT | PreferenceMT | FullMT deriving stock (Eq, Ord, Show)
 
-data TurnoutSurvey a where
-  CESSurvey :: TurnoutSurvey (F.Record DP.CESByCDR)
-  CPSSurvey :: TurnoutSurvey (F.Record DP.CPSByStateR)
+data ActionSurvey a where
+  CESSurvey :: ActionSurvey (F.Record DP.CESByCDR)
+  CPSSurvey :: ActionSurvey (F.Record DP.CPSByStateR)
 
 data RealCountModel = ContinuousBinomial | BetaProportion deriving stock (Eq)
 
@@ -214,9 +220,9 @@ data SurveyAggregation b where
   UnweightedAggregation :: SurveyAggregation TE.EIntArray
   WeightedAggregation :: RealCountModel -> SurveyAggregation TE.ECVec
 
-turnoutSurveyText :: TurnoutSurvey a -> Text
-turnoutSurveyText CESSurvey = "CES"
-turnoutSurveyText CPSSurvey = "CPS"
+actionSurveyText :: ActionSurvey a -> Text
+actionSurveyText CESSurvey = "CES"
+actionSurveyText CPSSurvey = "CPS"
 
 data PSTargets = NoPSTargets | PSTargets deriving stock (Eq, Ord, Show)
 psTargetsText :: PSTargets -> Text
@@ -271,62 +277,19 @@ covariatesAndCountsFromData rtt modelConfig trialsF succF = do
     else pure $ TE.namedE "ERROR" TE.SMat -- this shouldn't show up in stan code at all
   pure $ CovariatesAndCounts rtt nCovariatesE dmE $ BinomialData trialsE successesE
 
-{-
-data StateTargetsData tds =
-  StateTargetsData
-  {
-    stdTargetTypeTag :: SMB.RowTypeTag (F.Record tds)
-  , stdTarget :: TE.VectorE
-  , stdACSTag :: SMB.RowTypeTag (F.Record DDP.ACSa5ByStateR)
-  , stdACSWgts :: TE.IntArrayE
-  , stdACSCovariates :: TE.MatrixE
-  }
--}
 
-data ModelData tds a (b :: TE.EType) where
-  ModelData :: CovariatesAndCounts a b -> ModelData tds a b
+data ModelData a (b :: TE.EType) where
+  ModelData :: CovariatesAndCounts a b -> ModelData a b
 --  PT_ModelData :: CovariatesAndCounts a b -> StateTargetsData tds -> ModelData tds a b
 
-covariatesAndCounts :: ModelData tds a b -> CovariatesAndCounts a b
+covariatesAndCounts :: ModelData a b -> CovariatesAndCounts a b
 covariatesAndCounts (ModelData cc) = cc
 --covariatesAndCounts (PT_ModelData cc _) = cc
 
-withCC :: (forall x y . CovariatesAndCounts x y -> c) -> ModelData tds a b -> c
+withCC :: (forall x y . CovariatesAndCounts x y -> c) -> ModelData a b -> c
 withCC f (ModelData cc) = f cc
 --withCC f (PT_ModelData cc _) = f cc
 
-{-
-stateTargetsTD :: Maybe Text
-               -> CovariatesAndCounts a b
-               -> StateTargetsData td
-               -> Maybe (TE.MatrixE -> TE.StanName -> SMB.StanBuilderM md gq TE.MatrixE)
-               -> Maybe TE.MatrixE
-               -> SMB.StanBuilderM md gq (TE.MatrixE, TE.IntArrayE)
-stateTargetsTD prefixM cc st cM rM = do
-  let prefixed t = maybe t (\p -> p <> "_" <> t) prefixM
-  dmACS' <- case cM of
-    Nothing -> pure st.stdACSCovariates
-    Just c -> c st.stdACSCovariates $ prefixed "dmACS_Centered"
-  dmACS <- case rM of
-    Nothing -> pure dmACS'
-    Just r -> SMB.inBlock SMB.SBTransformedData $ SMB.addFromCodeWriter $ do
-      let rowsE = SMB.dataSetSizeE st.stdACSTag
-          colsE = cc.ccNCovariates
-      TE.declareRHSNW (TE.NamedDeclSpec (prefixed "acsDM_QR") $ TE.matrixSpec rowsE colsE [])
-           $ dmACS' `TE.timesE` r
-  acsNByState <- SMB.inBlock SMB.SBTransformedData $ SMB.addFromCodeWriter $ do
-    let nStatesE = SMB.groupSizeE stateG
-        nACSRowsE = SMB.dataSetSizeE st.stdACSTag
-        acsStateIndex = SMB.byGroupIndexE st.stdACSTag stateG
-        plusEq = TE.opAssign TEO.SAdd
-        acsNByStateNDS = TE.NamedDeclSpec (prefixed "acsNByState") $ TE.intArraySpec nStatesE [TE.lowerM $ TE.intE 0]
-    acsNByState <- TE.declareRHSNW acsNByStateNDS $ TE.functionE SF.rep_array (TE.intE 0 :> nStatesE :> TNil)
-    TE.addStmt
-      $ TE.for "k" (TE.SpecificNumbered (TE.intE 1) nACSRowsE) $ \kE ->
-      [(TE.indexE TEI.s0 acsStateIndex acsNByState `TE.at` kE) `plusEq` (st.stdACSWgts `TE.at` kE)]
-    pure acsNByState
-  pure (dmACS, acsNByState)
--}
 data RunConfig l = RunConfig { rcIncludePPCheck :: Bool, rcIncludeLL :: Bool, rcPS :: Maybe (SMB.GroupTypeTag (F.Record l)) }
 
 newtype PSMap l a = PSMap { unPSMap :: Map (F.Record l) a} deriving newtype (Functor)

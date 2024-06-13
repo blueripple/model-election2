@@ -75,51 +75,38 @@ import Flat.Instances.Vector ()
 --stateG :: SMB.GroupTypeTag Text
 --stateG = SMB.GroupTypeTag "State"
 
-data Config a b where
-  RegistrationOnly :: MC.RegistrationConfig a b -> Config a b
-  TurnoutOnly :: MC.TurnoutConfig a b -> Config a b
-  PrefOnly :: MC.PrefConfig b -> Config (F.Record DP.CESByCDR) b
-  TurnoutAndPref :: MC.TurnoutConfig a b -> MC.PrefConfig b -> Config a b
+data Config (mc :: MC.ModelCategory) a b where
+  ActionOnly :: MC.ActionConfig mc a b -> Config mc a b
+  PrefOnly :: MC.PrefConfig mc b -> Config mc (F.Record DP.CESByCDR) b
+  ActionAndPref :: MC.ActionConfig mc a b -> MC.PrefConfig mc b -> Config mc a b
 
-turnoutSurvey :: Config a b -> Maybe (MC.TurnoutSurvey a)
-turnoutSurvey (RegistrationOnly (MC.RegistrationConfig rs _)) = Just rs
-turnoutSurvey (TurnoutOnly (MC.TurnoutConfig ts _)) = Just ts
-turnoutSurvey (PrefOnly _) = Nothing
-turnoutSurvey (TurnoutAndPref (MC.TurnoutConfig ts _) _) = Just ts
+actionSurvey :: Config mc a b -> Maybe (MC.ActionSurvey a)
+actionSurvey (ActionOnly (MC.ActionConfig rs _)) = Just rs
+actionSurvey (PrefOnly _) = Nothing
+actionSurvey (ActionAndPref (MC.ActionConfig ts _) _) = Just ts
 
-usesCPS :: Config a b -> Bool
-usesCPS c = case c of
-  RegistrationOnly (MC.RegistrationConfig rs _) ->  case rs of
-    MC.CPSSurvey -> True
-    _ -> False
-  TurnoutOnly (MC.TurnoutConfig ts _) -> case ts of
-    MC.CPSSurvey -> True
-    _ -> False
-  TurnoutAndPref (MC.TurnoutConfig ts _) _ -> case ts of
-    MC.CPSSurvey -> True
-    _ -> False
-  _ -> False
+usesCPS :: Config mc a b -> Bool
+usesCPS c = (Just MC.CPSSurvey ==) . actionSurvey
 
-usesCES :: Config a b -> Bool
-usesCES (RegistrationOnly (MC.RegistrationConfig rs _)) =  case rs of
-  MC.CESSurvey -> True
-  _ -> False
-usesCES (TurnoutOnly (MC.TurnoutConfig ts _)) = case ts of
-  MC.CESSurvey -> True
-  _ -> False
+
+usesCES :: Config mc a b -> Bool
+usesCES (ActionOnly (MC.ActionConfig rs _)) =  rs == MC.CESSurvey
 usesCES _ = True
 
-configText :: Config a b -> Text
-configText (RegistrationOnly (MC.RegistrationConfig rs mc)) = "Reg" <> MC.turnoutSurveyText rs <> "_" <> MC.modelConfigText mc
-configText (TurnoutOnly (MC.TurnoutConfig ts mc)) =
-  "Turnout" <> MC.turnoutSurveyText ts <> "_" <> MC.modelConfigText mc
-configText (PrefOnly (MC.PrefConfig mc)) =
-  "Pref" <> "_" <> MC.modelConfigText mc
-configText (TurnoutAndPref (MC.TurnoutConfig ts tMC) (MC.PrefConfig pMC)) =
-  "Both" <> MC.turnoutSurveyText ts
-  <> "_" <> MC.modelConfigText tMC
-  <> "_" <> MC.modelConfigText pMC
-
+configText :: forall mc a b. Config mc a b -> Text
+configText (ActionOnly (MC.ActionConfig rs mc)) = case MC.modelCategory @mc of
+  MC.Reg -> "Reg" <> MC.actionSurveyText rs <> "_" <> MC.modelConfigText mc
+  MC.Vote -> "Turnout" <> MC.actionSurveyText ts <> "_" <> MC.modelConfigText mc
+configText (PrefOnly (MC.PrefConfig mc)) = case MC.modelCategory @mc of
+  MC.Reg -> "RegPref" <> "_" <> MC.modelConfigText mc
+  MC.Vote -> "Pref" <> "_" <> MC.modelConfigText mc
+configText (ActionAndPref (MC.ActionConfig ts tMC) (MC.PrefConfig pMC)) = case  MC.modelCategory @mc of
+  MC.Reg -> "RegBoth" <> MC.actionSurveyText ts
+             <> "_" <> MC.modelConfigText tMC
+             <> "_" <> MC.modelConfigText pMC
+  MC.Vote -> "Both" <> MC.actionSurveyText ts
+             <> "_" <> MC.modelConfigText tMC
+             <> "_" <> MC.modelConfigText pMC
 
 groupBuilder :: forall g k lk l a b .
                  (Foldable g
@@ -144,32 +131,18 @@ groupBuilder config states psKeys = do
   when (usesCES config) $ SMB.addModelDataToGroupBuilder "CES" (SMB.ToFoldable DP.cesData) >>= MC.addGroupIndexesAndIntMaps groups'
   MC.psGroupBuilder states psKeys
 
-registrationModelData :: forall a b gq lk . MC.RegistrationConfig a b
-                 -> SMB.StanBuilderM (DP.ModelData lk) gq (MC.ModelData '[] a b)
-registrationModelData (MC.RegistrationConfig ts mc) = do
+actionModelData :: forall mc a b gq lk . MC.ActionConfig mc a b
+                 -> SMB.StanBuilderM (DP.ModelData lk) gq (MC.ModelData a b)
+actionModelData (MC.ActionConfig ts mc) = do
   let cpsSurveyDataTag = SMB.dataSetTag @(F.Record DP.CPSByStateR) SC.ModelData "CPS"
       cesSurveyDataTag = SMB.dataSetTag @(F.Record DP.CESByCDR) SC.ModelData "CES"
       uwSurveyed rtt = SBB.addCountData rtt "Surveyed" (view DP.surveyed)
-      uwRegistered rtt = SBB.addCountData rtt "Registered" (view DP.registered)
       wSurveyed rtt = SBB.addRealData rtt "Surveyed" (Just 0) Nothing (view DP.surveyedW)
-      wRegistered rtt = SBB.addRealData rtt "Registered" (Just 0) Nothing (view DP.registeredW)
-  case ts of
-      MC.CPSSurvey -> case mc.mcSurveyAggregation of
-        MC.UnweightedAggregation -> fmap MC.ModelData $ cpsSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc uwSurveyed uwRegistered
-        MC.WeightedAggregation _  -> fmap MC.ModelData $ cpsSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc wSurveyed wRegistered
-      MC.CESSurvey -> case mc.mcSurveyAggregation of
-        MC.UnweightedAggregation -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc uwSurveyed uwRegistered
-        MC.WeightedAggregation _ -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc wSurveyed wRegistered
-
-turnoutModelData :: forall a b gq lk . MC.TurnoutConfig a b
-                 -> SMB.StanBuilderM (DP.ModelData lk) gq (MC.ModelData BRDF.StateTurnoutCols a b)
-turnoutModelData (MC.TurnoutConfig ts mc) = do
-  let cpsSurveyDataTag = SMB.dataSetTag @(F.Record DP.CPSByStateR) SC.ModelData "CPS"
-      cesSurveyDataTag = SMB.dataSetTag @(F.Record DP.CESByCDR) SC.ModelData "CES"
-      uwSurveyed rtt = SBB.addCountData rtt "Surveyed" (view DP.surveyed)
-      uwVoted rtt = SBB.addCountData rtt "Voted" (view DP.voted)
-      wSurveyed rtt = SBB.addRealData rtt "Surveyed" (Just 0) Nothing (view DP.surveyedW)
-      wVoted rtt = SBB.addRealData rtt "Voted" (Just 0) Nothing (view DP.votedW)
+      actionText = case MC.modelCategroy @mc of
+        MC.Reg -> "Registered"
+        MC.Vote -> "Voted"
+      uwVoted rtt = SBB.addCountData rtt actionText (view DP.voted)
+      wVoted rtt = SBB.addRealData rtt actionText (Just 0) Nothing (view DP.votedW)
   case ts of
     MC.CPSSurvey -> case mc.mcSurveyAggregation of
       MC.UnweightedAggregation -> fmap MC.ModelData $ cpsSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc uwSurveyed uwVoted
@@ -178,10 +151,14 @@ turnoutModelData (MC.TurnoutConfig ts mc) = do
       MC.UnweightedAggregation -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc uwSurveyed uwVoted
       MC.WeightedAggregation _  -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc wSurveyed wVoted
 
-prefModelData :: forall b gq lk . MC.PrefConfig b
+prefModelData :: forall mc b gq lk . MC.PrefConfig mc b
               -> SMB.StanBuilderM (DP.ModelData lk) gq (MC.ModelData '[] (F.Record DP.CESByCDR) b)
 prefModelData (MC.PrefConfig mc) = do
   let cesSurveyDataTag = SMB.dataSetTag @(F.Record DP.CESByCDR) SC.ModelData "CES"
+      (actionTag, dPrefTag) = case  MC.modelCategory @mc of
+        MC.Reg -> undefined
+        MC.Vote -> ("VotesInRace", "DVotes")
+
       uwVoted rtt = SBB.addCountData rtt "VotesInRace" (view DP.votesInRace)
       uwVotedD rtt = SBB.addCountData rtt "DVotes" (view DP.dVotes)
       wVoted rtt = SBB.addRealData rtt "VotesInRace" (Just 0) Nothing (view DP.votesInRaceW)

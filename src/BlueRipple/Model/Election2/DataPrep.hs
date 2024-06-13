@@ -91,6 +91,11 @@ FS.declareColumn "VotesInRaceW" ''Double
 FS.declareColumn "DVotesW" ''Double
 FS.declareColumn "RVotesW" ''Double
 
+FS.declareColumn "DReg" ''Int
+FS.declareColumn "RReg" ''Int
+FS.declareColumn "DRegW" ''Double
+FS.declareColumn "RRegW" ''Double
+
 FS.declareColumn "TVotes" ''Int
 FS.declareColumn "PresVotes" ''Int
 FS.declareColumn "PresDVotes" ''Int
@@ -133,7 +138,7 @@ type DCatsR = [DT.Age5C, DT.SexC, DT.Education4C, DT.Race5C]
 type LPredictorsR = '[DT.PWPopPerSqMile]
 type PredictorsR = LPredictorsR V.++ DCatsR
 type PrefPredictorsR = HouseIncumbency ': PredictorsR
-type PrefDataR = [VotesInRace, DVotes, RVotes, VotesInRaceW, DVotesW, RVotesW]
+type PrefDataR = [VotesInRace, DVotes, RVotes, VotesInRaceW, DVotesW, RVotesW, DReg, RReg, DRegW, RRegW]
 
 type CESByR k = k V.++  PrefPredictorsR V.++ CountDataR V.++ PrefDataR
 type CESByCDR = CESByR CDKeyR
@@ -540,7 +545,7 @@ cesCountedDemPresVotesByState clearCaches = do
   BRCC.retrieveOrMakeFrame cacheKey ces2020_C $ \ces → cesMR @StateKeyR 2020 (F.rgetField @CCES.MPresVoteParty) ces
 
 
-countCESVotesF :: (F.ElemOf rs CCES.VRegistrationC, F.ElemOf rs CCES.VTurnoutC, F.ElemOf rs CCES.CESWeight)
+countCESVotesF :: (FC.ElemsOf rs [CCES.VRegistrationC, CCES.PartisanId3, CCES.VTurnoutC, CCES.CESWeight])
                => (F.Record rs -> MT.MaybeData ET.PartyT)
                -> FL.Fold
                   (F.Record rs)
@@ -549,13 +554,18 @@ countCESVotesF votePartyMD =
   let vote (MT.MaybeData x) = maybe False (const True) x
       dVote (MT.MaybeData x) = maybe False (== ET.Democratic) x
       rVote (MT.MaybeData x) = maybe False (== ET.Republican) x
+      registered = CCES.registered . view CCES.vRegistrationC
+      pidDem = (== CCES.PI3_Democrat) . F.rgetField @CCES.PartisanId3
+      pidRep = (== CCES.PI3_Republican) . F.rgetField @CCES.PartisanId3
       wgt = view CCES.cESWeight
       surveyedF = FL.length
-      registeredF = FL.prefilter (CCES.registered . view CCES.vRegistrationC) FL.length
+      registeredF = FL.prefilter registered FL.length
       votedF = FL.prefilter (CCES.voted . view CCES.vTurnoutC) FL.length
       votesF = FL.prefilter (vote . votePartyMD) votedF
       dVotesF = FL.prefilter (dVote . votePartyMD) votedF
       rVotesF = FL.prefilter (rVote . votePartyMD) votedF
+      dRegF = FL.prefilter pidDem registeredF
+      rRegF = FL.prefilter pidRep registeredF
       surveyWgtF = FL.premap wgt FL.sum
       lmvskSurveyedF = FL.premap wgt FLS.fastLMVSK
       essSurveyedF = effSampleSizeFld lmvskSurveyedF
@@ -566,11 +576,14 @@ countCESVotesF votePartyMD =
       essVotesF = effSampleSizeFld lmvskVotesF
       waDVotesF = wgtdAverageBoolFld wgt (dVote . votePartyMD)
       waRVotesF = wgtdAverageBoolFld wgt (rVote . votePartyMD)
-   in (\sw s r v eS waR waV vs dvs rvs eV waDV waRV →
+      waDRegF = wgtdAverageBoolFld wgt (\r -> registered r && pidDem r)
+      waRRegF = wgtdAverageBoolFld wgt (\r -> registered r && pidRep r)
+   in (\sw s r v eS waR waV vs dvs rvs eV waDV waRV dR rR wdR wrR →
           sw F.&: s F.&: r F.&: v
           F.&: eS F.&: min eS (eS * waR) F.&: min eS (eS * waV)
           F.&: vs F.&: dvs F.&: rvs
-          F.&: eV F.&: min eV (eV * waDV) F.&: min eV (eV * waRV) F.&: V.RNil)
+          F.&: eV F.&: min eV (eV * waDV) F.&: min eV (eV * waRV)
+          F.&: dR F.&: rR F.&: wdR F.&: wrR F.&: V.RNil)
       <$> surveyWgtF
       <*> surveyedF
       <*> registeredF
@@ -584,6 +597,10 @@ countCESVotesF votePartyMD =
       <*> essVotesF
       <*> waDVotesF
       <*> waRVotesF
+      <*> dRegF
+      <*> rRegF
+      <*> waDRegF
+      <*> waRRegF
 
 cesRecodeHispanic ∷ (F.ElemOf rs DT.HispC, F.ElemOf rs DT.Race5C) => F.Record rs -> F.Record rs
 cesRecodeHispanic r =
@@ -605,6 +622,7 @@ cesMR ∷ forall lk rs f m .
         , F.ElemOf rs DT.Race5C
         , rs F.⊆ (DT.Education4C ': rs)
         , F.ElemOf rs CCES.VRegistrationC
+        , F.ElemOf rs CCES.PartisanId3
         , F.ElemOf rs CCES.VTurnoutC
         , F.ElemOf rs CCES.CESWeight
         , (lk V.++ DCatsR) V.++ (CountDataR V.++ PrefDataR) ~ (((lk V.++ DCatsR) V.++ CountDataR) V.++ PrefDataR)
