@@ -150,16 +150,16 @@ registrationModelData (MC.RegistrationConfig ts mc) = do
   let cpsSurveyDataTag = SMB.dataSetTag @(F.Record DP.CPSByStateR) SC.ModelData "CPS"
       cesSurveyDataTag = SMB.dataSetTag @(F.Record DP.CESByCDR) SC.ModelData "CES"
       uwSurveyed rtt = SBB.addCountData rtt "Surveyed" (view DP.surveyed)
-      uwVoted rtt = SBB.addCountData rtt "Voted" (view DP.voted)
+      uwRegistered rtt = SBB.addCountData rtt "Registered" (view DP.registered)
       wSurveyed rtt = SBB.addRealData rtt "Surveyed" (Just 0) Nothing (view DP.surveyedW)
-      wVoted rtt = SBB.addRealData rtt "Voted" (Just 0) Nothing (view DP.votedW)
+      wRegistered rtt = SBB.addRealData rtt "Registered" (Just 0) Nothing (view DP.registeredW)
   case ts of
       MC.CPSSurvey -> case mc.mcSurveyAggregation of
-        MC.UnweightedAggregation -> fmap MC.ModelData $ cpsSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc uwSurveyed uwVoted
-        MC.WeightedAggregation _  -> fmap MC.ModelData $ cpsSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc wSurveyed wVoted
+        MC.UnweightedAggregation -> fmap MC.ModelData $ cpsSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc uwSurveyed uwRegistered
+        MC.WeightedAggregation _  -> fmap MC.ModelData $ cpsSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc wSurveyed wRegistered
       MC.CESSurvey -> case mc.mcSurveyAggregation of
-        MC.UnweightedAggregation -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc uwSurveyed uwVoted
-        MC.WeightedAggregation _ -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc wSurveyed wVoted
+        MC.UnweightedAggregation -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc uwSurveyed uwRegistered
+        MC.WeightedAggregation _ -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc wSurveyed wRegistered
 
 turnoutModelData :: forall a b gq lk . MC.TurnoutConfig a b
                  -> SMB.StanBuilderM (DP.ModelData lk) gq (MC.ModelData BRDF.StateTurnoutCols a b)
