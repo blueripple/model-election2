@@ -110,21 +110,21 @@ data ModelConfig (b :: TE.EType) =
 modelConfigText :: ModelConfig b -> Text
 modelConfigText (ModelConfig sa alphas dmr) =  aggregationText sa <> "_" <> alphasText alphas <> "_" <> dmr.dmName
 
-data ModelCategory = Reg | Vote
+data ModelCategory = Reg | Vote deriving stock (Show, Eq)
 
-data ActionConfig (c :: ModelCategory) a b =
+data ActionConfig a b =
   ActionConfig
   {
     acSurvey :: ActionSurvey a
   , acModelConfig :: ModelConfig b
   }
 
-data PrefConfig (c :: ModelCategory) b =
+data PrefConfig b =
   PrefConfig
   {
     pcModelConfig :: ModelConfig b
   }
-
+{-
 -- types to terms
 class ModelCategoryV a where
   modelCategory :: ModelCategory
@@ -147,6 +147,7 @@ instance ModelCategoryV (PrefConfig Reg b) where
 
 instance ModelCategoryV (PrefConfig Vote b) where
   modelCategory = Vote
+-}
 
 type GroupsR = GT.StateAbbreviation ': DP.DCatsR
 

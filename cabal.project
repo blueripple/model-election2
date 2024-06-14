@@ -23,6 +23,7 @@ import: ../cabal_repo_imports/data-ACS-Tables.project
 import: ../cabal_repo_imports/data-ACS-PUMS.project
 import: ../cabal_repo_imports/data-CES.project
 import: ../cabal_repo_imports/data-CPS-VS.project
+import: ../cabal_repo_imports/data-RDH-voterfiles.project
 import: ../cabal_repo_imports/model-tools.project
 import: ../cabal_repo_imports/model-demographic.project
 import: ../cabal_repo_imports/haskell-stan.project

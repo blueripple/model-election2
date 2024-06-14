@@ -104,6 +104,9 @@ FS.declareColumn "HouseVotes" ''Int
 FS.declareColumn "HouseDVotes" ''Int
 FS.declareColumn "HouseRVotes" ''Int
 
+FS.declareColumn "ActionTarget" ''Int -- number of people who acted
+FS.declareColumn "PrefDTarget" ''Double -- fraction of people who acted with preference
+
 -- +1 for Dem incumbent, 0 for no incumbent, -1 for Rep incumbent
 FS.declareColumn "Incumbency" ''Int
 FS.declareColumn "HouseIncumbency" ''Int

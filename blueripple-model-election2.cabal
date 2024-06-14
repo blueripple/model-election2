@@ -34,6 +34,7 @@ library
    , blueripple-data-ACS-Tables
    , blueripple-data-CES
    , blueripple-data-CPS-VS
+   , blueripple-data-RDH-voterfiles
    , blueripple-model-demographic
    , blueripple-model-tools
    , array >= 0.5 && < 0.6
