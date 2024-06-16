@@ -174,7 +174,7 @@ prefModelData c (MC.PrefConfig mc) = do
       uwAction :: forall rs md. (FC.ElemsOf rs [DP.VotesInRace, DP.Registered]) => SMB.RowTypeTag (F.Record rs) -> SMB.StanBuilderM md gq TE.IntArrayE
       uwAction rtt = case c of
         MC.Reg -> SBB.addCountData rtt "Registered" (view DP.registered)
-        MC.Vote -> SBB.addCountData rtt "Voted" (view DP.votesInRace)
+        MC.Vote -> SBB.addCountData rtt "VotesInRace" (view DP.votesInRace)
       uwPrefD :: forall rs md. (FC.ElemsOf rs [DP.DVotes, DP.DReg]) => SMB.RowTypeTag (F.Record rs) -> SMB.StanBuilderM md gq TE.IntArrayE
       uwPrefD rtt = case c of
         MC.Reg -> SBB.addCountData rtt "DReg" (view DP.dReg)
@@ -182,7 +182,7 @@ prefModelData c (MC.PrefConfig mc) = do
       wAction :: forall rs md. (FC.ElemsOf rs [DP.VotesInRaceW, DP.RegisteredW]) => SMB.RowTypeTag (F.Record rs) -> SMB.StanBuilderM md gq TE.VectorE
       wAction rtt = case c of
         MC.Reg -> SBB.addRealData rtt "Registered" (Just 0) Nothing (view DP.registeredW)
-        MC.Vote -> SBB.addRealData rtt "Voted" (Just 0) Nothing (view DP.votesInRaceW)
+        MC.Vote -> SBB.addRealData rtt "VotesInRace" (Just 0) Nothing (view DP.votesInRaceW)
       wPrefD :: forall rs md. (FC.ElemsOf rs [DP.DVotesW, DP.DRegW]) => SMB.RowTypeTag (F.Record rs) -> SMB.StanBuilderM md gq TE.VectorE
       wPrefD rtt = case c of
         MC.Reg -> SBB.addRealData rtt "DReg" (Just 0) Nothing (view DP.dRegW)

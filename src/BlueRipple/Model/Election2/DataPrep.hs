@@ -104,8 +104,8 @@ FS.declareColumn "HouseVotes" ''Int
 FS.declareColumn "HouseDVotes" ''Int
 FS.declareColumn "HouseRVotes" ''Int
 
-FS.declareColumn "ActionTarget" ''Int -- number of people who acted
-FS.declareColumn "PrefDTarget" ''Double -- fraction of people who acted with preference
+FS.declareColumn "ActionTarget" ''Double --fraction of all surveyed people who acted (registered or voted)
+FS.declareColumn "PrefDTarget" ''Double -- fraction, among people who acted,  with D preference
 
 -- +1 for Dem incumbent, 0 for no incumbent, -1 for Rep incumbent
 FS.declareColumn "Incumbency" ''Int
@@ -557,12 +557,12 @@ countCESVotesF votePartyMD =
   let vote (MT.MaybeData x) = maybe False (const True) x
       dVote (MT.MaybeData x) = maybe False (== ET.Democratic) x
       rVote (MT.MaybeData x) = maybe False (== ET.Republican) x
-      registered = CCES.registered . view CCES.vRegistrationC
+      registered' = CCES.registered . view CCES.vRegistrationC
       pidDem = (== CCES.PI3_Democrat) . F.rgetField @CCES.PartisanId3
       pidRep = (== CCES.PI3_Republican) . F.rgetField @CCES.PartisanId3
       wgt = view CCES.cESWeight
       surveyedF = FL.length
-      registeredF = FL.prefilter registered FL.length
+      registeredF = FL.prefilter registered' FL.length
       votedF = FL.prefilter (CCES.voted . view CCES.vTurnoutC) FL.length
       votesF = FL.prefilter (vote . votePartyMD) votedF
       dVotesF = FL.prefilter (dVote . votePartyMD) votedF
@@ -579,8 +579,8 @@ countCESVotesF votePartyMD =
       essVotesF = effSampleSizeFld lmvskVotesF
       waDVotesF = wgtdAverageBoolFld wgt (dVote . votePartyMD)
       waRVotesF = wgtdAverageBoolFld wgt (rVote . votePartyMD)
-      waDRegF = wgtdAverageBoolFld wgt (\r -> registered r && pidDem r)
-      waRRegF = wgtdAverageBoolFld wgt (\r -> registered r && pidRep r)
+      waDRegF = wgtdAverageBoolFld wgt (\r -> registered' r && pidDem r)
+      waRRegF = wgtdAverageBoolFld wgt (\r -> registered' r && pidRep r)
    in (\sw s r v eS waR waV vs dvs rvs eV waDV waRV dR rR wdR wrR →
           sw F.&: s F.&: r F.&: v
           F.&: eS F.&: min eS (eS * waR) F.&: min eS (eS * waV)

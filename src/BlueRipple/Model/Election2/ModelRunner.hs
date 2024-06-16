@@ -268,9 +268,9 @@ modelCPs year cacheStructure config = K.wrapPrefix "modelCPs" $ do
         MC2.PrefOnly _ _ ->  pure $ FL.fold ((,) <$> FL.premap (view GT.stateAbbreviation) FL.set <*> FL.premap (view DT.pWPopPerSqMile) FL.mean) modelData.cesData
         MC2.ActionAndPref _ _ _ -> K.knitError "modelCPs called with TurnoutAndPref config."
   cellPSDataCacheKey <- case config of
-    MC2.ActionOnly cat ac -> pure $ "allCell_" <>  MC.actionSurveyText ac.acSurvey <> "PSData.bin"
-    MC2.PrefOnly _ ->  pure $ "allCell_CESPSData.bin"
-    MC2.ActionAndPref _ _ -> K.knitError "modelCPs called with TurnoutAndPref config."
+    MC2.ActionOnly _ ac -> pure $ "allCell_" <>  MC.actionSurveyText ac.acSurvey <> "PSData.bin"
+    MC2.PrefOnly _ _ ->  pure $ "allCell_CESPSData.bin"
+    MC2.ActionAndPref _ _ _ -> K.knitError "modelCPs called with TurnoutAndPref config."
   allCellProbsCK <- BRCC.cacheFromDirE (csProjectCacheDirE cacheStructure) cellPSDataCacheKey
   allCellProbsPS_C <-  BRCC.retrieveOrMakeD allCellProbsCK (pure ()) $ \_ -> pure $ allCellProbsPS allStates avgPWPopPerSqMile
   K.logLE K.Diagnostic "Running all cell model, if necessary"
@@ -287,27 +287,40 @@ applyScenario pLens (SimpleScenario _ f) r = over pLens (f (F.rcast r)) r
 scenarioCacheText :: Scenario ks -> Text
 scenarioCacheText (SimpleScenario t _) = t
 
-stateActionTargets ::  Int -> MC.ModelCategory -> MC.ActionConfig a b -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec [GT.StateAbbreviation, DP.ActionTarget]))
-stateActionTargets year cat ac = case cat of
-  MC.Reg -> do
-    let stateRegCacheKey = "data/stateReg2022.bin"
-        innerFold :: FL.Fold (F.Record [RDH.VFPartyDem, RDH.VFPartyRep, RDH.VFPartyOth]) (F.Record '[DP.ActionTarget])
-        innerFold = (\d r o -> d + r + o)
-                    <$> FL.premap (view RDH.vFPartyDem) FL.sum
-                    <*> FL.premap (view RDH.vFPartyRep) FL.sum
-                    <*> FL.premap (view RDH.vFPartyOth) FL.sum
-        outerFold :: FL.Fold (F.Record RDH.VF_Raw) (F.FrameRec [GT.StateAbbreviation, DP.ActionTarget])
-        outerFold = FMR.concatFold
-                    $ FMR.mapReduceFold
-                    FMR.noUnpack
-                    (FMR.assignKeysAndData @'[GT.StateAbbreviation])
-                    (FMR.foldAndAddKey $ const innerFold)
-    regData_C <- RDH.voterfileByTracts Nothing
-    BRCC.retrieveOrMakeFrame stateRegCacheKey regData_C $ pure . FL.fold outerFold
-  MC.Vote -> do
-    let stFilter r = r ^. BRDF.year == year && r ^. GT.stateAbbreviation /= "US"
-    stateTurnout_C <- fmap (fmap (F.filterFrame stFilter)) BRDF.stateTurnoutLoader
-    pure $ fmap (F.rcast . FT.replaceColumn @BRDF.BallotsCountedVEP @DP.ActionTarget id) stateTurnout_C
+type TotalReg = "TotalReg" F.:-> Int
+
+stateActionTargets ::  (K.KnitEffects r, BRCC.CacheEffects r)
+                   => Int -> MC.ModelCategory -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec [GT.StateAbbreviation, DP.ActionTarget]))
+stateActionTargets year cat = do
+  let stFilter y r = r ^. BRDF.year == y && r ^. GT.stateAbbreviation /= "US"
+  stateTurnout_C <- BRDF.stateTurnoutLoader
+  case cat of
+    MC.Reg -> do
+      let stateRegCacheKey = "data/stateReg2022.bin"
+          innerFoldR :: FL.Fold (F.Record [RDH.VFPartyDem, RDH.VFPartyRep, RDH.VFPartyOth]) (F.Record '[TotalReg])
+          innerFoldR = (\d r o -> FT.recordSingleton @TotalReg $ d + r + o)
+                       <$> FL.premap (view RDH.vFPartyDem) FL.sum
+                       <*> FL.premap (view RDH.vFPartyRep) FL.sum
+                       <*> FL.premap (view RDH.vFPartyOth) FL.sum
+          outerFoldR :: FL.Fold RDH.VF_Raw (F.FrameRec [GT.StateAbbreviation, TotalReg])
+          outerFoldR = FMR.concatFold
+                       $ FMR.mapReduceFold
+                       FMR.noUnpack
+                       (FMR.assignKeysAndData @'[GT.StateAbbreviation])
+                       (FMR.foldAndAddKey innerFoldR)
+      regData_C <- RDH.voterfileByTracts Nothing
+      let deps = (,) <$> regData_C <*> fmap (F.filterFrame $ stFilter 2022) stateTurnout_C
+      BRCC.retrieveOrMakeFrame stateRegCacheKey deps $ \(regData, stateTurnoutData) -> do
+        let totalRegByState = FL.fold outerFoldR regData
+            (joined, missing) = FJ.leftJoinWithMissing @'[GT.StateAbbreviation] totalRegByState stateTurnoutData
+        when (not $ null missing) $ K.knitError $ "stateActionTargets: missing keys in totalRegByState/stateTurnoutData: " <> show missing
+        let f r = let vep = realToFrac (F.rgetField @BRDF.VEP r)
+                  in if vep > 0 then realToFrac (F.rgetField @TotalReg r) / vep else 0
+            g r = FT.recordSingleton @DP.ActionTarget $ f r
+        pure $ fmap (F.rcast . FT.mutate g) joined
+    MC.Vote -> pure
+               $ fmap (F.rcast . FT.replaceColumn @BRDF.BallotsCountedVEP @DP.ActionTarget id)
+               <$> fmap (F.filterFrame $ stFilter year) stateTurnout_C
 
 runActionModelCPAH :: forall ks r a b .
                        (K.KnitEffects r
@@ -322,16 +335,16 @@ runActionModelCPAH :: forall ks r a b .
                     -> K.ActionWithCacheTime r (DP.PSData ks)
                     -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec (AH ks '[ModelPr])))
 runActionModelCPAH year cacheStructure mc ac scenarioM psData_C = K.wrapPrefix "runTurnoutModelCPAH" $ do
-  actionCPs_C <- modelCPs year (allCellCacheStructure cacheStructure) (MC2.ActionOnly tc)
-  let stFilter r = r ^. BRDF.year == year && r ^. GT.stateAbbreviation /= "US"
-  stateActionTargets_C <- stateActionTargets --fmap (fmap (F.filterFrame stFilter)) BRDF.stateTurnoutLoader
+  actionCPs_C <- modelCPs year (allCellCacheStructure cacheStructure) (MC2.ActionOnly mc ac)
+--  let stFilter r = r ^. BRDF.year == year && r ^. GT.stateAbbreviation /= "US"
+  stateActionTargets_C <- stateActionTargets year mc --fmap (fmap (F.filterFrame stFilter)) BRDF.stateTurnoutLoader
   let actionCacheDir = if mc == MC.Reg then "Registration/" else "Turnout/"
       cacheSuffix = actionCacheDir <> MC.actionSurveyText ac.acSurvey <> show year <> "_"
         <> MC.modelConfigText ac.acModelConfig <> "/" <> csAllCellPSPrefix cacheStructure
         <> maybe "" (("_" <>) .  scenarioCacheText) scenarioM
         <> "_ACProbsAH.bin"
   cacheKey <- BRCC.cacheFromDirE (csProjectCacheDirE cacheStructure) cacheSuffix
-  let ahDeps = (,,) <$> turnoutCPs_C <*> psData_C <*> stateActionTargets_C
+  let ahDeps = (,,) <$> actionCPs_C <*> psData_C <*> stateActionTargets_C
   BRCC.retrieveOrMakeFrame cacheKey ahDeps $ \((tCP, tMPm), psD, stateActionTargets) -> do
     K.logLE K.Info "(Re)building AH adjusted all-cell probs."
     let probFrame =  fmap (\(ks, p) -> ks F.<+> FT.recordSingleton @ModelPr p) $ M.toList $ fmap MT.ciMid $ MC.unPSMap tCP
@@ -368,7 +381,7 @@ runActionModelAH year cacheStructure mc ac scenarioM psData_C = K.wrapPrefix "ru
   actionCPAH_C <- runActionModelCPAH year cacheStructure mc ac scenarioM psData_C
   let psNum r = (realToFrac $ r ^. DT.popCount) * r ^. modelPr
       psDen r = realToFrac $ r ^. DT.popCount
-      actionAHPS_C = fmap (FL.fold (psFold @l psNum psDen (view DT.popCount))) turnoutCPAH_C
+      actionAHPS_C = fmap (FL.fold (psFold @l psNum psDen (view DT.popCount))) actionCPAH_C
   K.logLE K.Diagnostic "Running action model for CIs, if necessary"
   actionPSForCI_C <- runBaseModel @l year (modelCacheStructure cacheStructure) (MC2.ActionOnly mc ac) psData_C
   let resMapDeps = (,) <$> actionAHPS_C <*> actionPSForCI_C
@@ -408,27 +421,28 @@ catFromPrefTargets :: PrefDTargetCategory r -> MC.ModelCategory
 catFromPrefTargets RegDTargets = MC.Reg
 catFromPrefTargets (VoteDTargets _) = MC.Vote
 
-statePrefDTargets :: Int -> PrefDTargetCategory r -> MC.ActionConfig a b -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec [GT.StateAbbreviation, DP.PrefDTarget]))
-statePrefDTargets year cat ac = case cat of
+statePrefDTargets :: (K.KnitEffects r, BRCC.CacheEffects r)
+                  => PrefDTargetCategory r -> CacheStructure Text Text -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec [GT.StateAbbreviation, DP.PrefDTarget]))
+statePrefDTargets cat cacheStructure = case cat of
   RegDTargets -> do
     let statePIDCacheKey = "data/statePID2022.bin"
-        regF = FL.prefilter ((== CES.R_Active) . view CES.vRegistrationC) FL.length
+        regF = FL.prefilter ((== CES.VR_Active) . F.rgetField @CES.VRegistrationC) FL.length
         innerFold :: FL.Fold (F.Record [CES.VRegistrationC, CES.PartisanId3]) (F.Record '[DP.PrefDTarget])
-        innerFold = (\a d r -> if d + r > 0 then d / (d + r) else 0.5)
+        innerFold = (\a d r -> FT.recordSingleton @DP.PrefDTarget $ if d + r > 0 then realToFrac d / realToFrac (d + r) else 0.5)
                     <$> regF
                     <*> FL.prefilter ((== CES.PI3_Democrat) . F.rgetField @CES.PartisanId3) regF
                     <*> FL.prefilter ((== CES.PI3_Republican) . F.rgetField @CES.PartisanId3) regF
-        outerFold :: FL.Fold (F.Record RDH.VF_Raw) (F.FrameRec [GT.StateAbbreviation, DP.PrefDTarget])
+        outerFold :: FL.Fold (F.Record CES.CESR) (F.FrameRec [GT.StateAbbreviation, DP.PrefDTarget])
         outerFold = FMR.concatFold
                     $ FMR.mapReduceFold
                     FMR.noUnpack
                     (FMR.assignKeysAndData @'[GT.StateAbbreviation])
-                    (FMR.foldAndAddKey $ const innerFold)
+                    (FMR.foldAndAddKey innerFold)
     cesData_C <- CES.ces22Loader
     BRCC.retrieveOrMakeFrame statePIDCacheKey cesData_C $ pure . FL.fold outerFold
   VoteDTargets dShareTargetConfig -> do
     dVoteTargets_C <- DP.dShareTarget (csProjectCacheDirE cacheStructure) dShareTargetConfig
-    pure $ fmap (F.rcast . FT.replaceColumn @ET.DemShare @DP.PrefDTarget id) dVoteTargets_C
+    pure $ fmap (F.rcast . FT.replaceColumn @ET.DemShare @DP.PrefDTarget id) <$> dVoteTargets_C
 
 runPrefModelCPAH :: forall ks r a b .
                   (K.KnitEffects r
@@ -446,11 +460,11 @@ runPrefModelCPAH :: forall ks r a b .
                  -> K.ActionWithCacheTime r (DP.PSData ks)
                  -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec (AH ks '[ModelPr, ModelT])))
 runPrefModelCPAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCategory psData_C = K.wrapPrefix "runPrefModelCPAH" $ do
-  let mc = catFromPrefTargets prefDTargetCateogry
-  actionCPAH_C <- runActionModelCPAH year cacheStructure mc ac tScenarioM psData_C
-  prefCPs_C <- modelCPs year (allCellCacheStructure cacheStructure) (MC2.PrefOnly pc)
-  prefDTargets_C <- statePrefDTargets year prefDTargetCategory ac --DP.dShareTarget (csProjectCacheDirE cacheStructure) dShareTargetConfig
-  let ahDeps = (,,,) <$> turnoutCPAH_C <*> prefCPs_C <*> psData_C <*> prefDTargets_C
+  let mc = catFromPrefTargets prefDTargetCategory
+  actionCPAH_C <- runActionModelCPAH year cacheStructure mc ac aScenarioM psData_C
+  prefCPs_C <- modelCPs year (allCellCacheStructure cacheStructure) (MC2.PrefOnly mc pc)
+  prefDTargets_C <- statePrefDTargets prefDTargetCategory cacheStructure --DP.dShareTarget (csProjectCacheDirE cacheStructure) dShareTargetConfig
+  let ahDeps = (,,,) <$> actionCPAH_C <*> prefCPs_C <*> psData_C <*> prefDTargets_C
       (prefCacheDir, prefTargetText) = case prefDTargetCategory of
         RegDTargets -> ("Reg/CES", "PID")
         VoteDTargets dShareTargetConfig -> ("Pref/CES", DP.dShareTargetText dShareTargetConfig)
@@ -581,18 +595,18 @@ runFullModelAH :: forall l ks r a b .
                -> PrefDTargetCategory r
                -> K.ActionWithCacheTime r (DP.PSData ks)
                -> K.Sem r (K.ActionWithCacheTime r (MC.PSMap l MT.ConfidenceInterval))
-runFullModelAH year cacheStructure tc tScenarioM pc pScenarioM dShareTargetConfig psData_C = K.wrapPrefix "runFullModelAH" $ do
+runFullModelAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCategory psData_C = K.wrapPrefix "runFullModelAH" $ do
   let mc = catFromPrefTargets prefDTargetCategory
 --  let cachePrefixT = "model/election2/Turnout/" <> MC.turnoutSurveyText ts <> show year <> "_" <> MC.aggregationText sa <> "_" <> MC.alphasText am <> "/"
 --  turnoutCPAH_C <- runTurnoutModelCPAH year modelDirE cacheDirE gqName cmdLine ts sa dmr pst am "AllCells" psData_C
-  prefCPAH_C <- runPrefModelCPAH year cacheStructure tc tScenarioM pc pScenarioM prefDTargetCategory psData_C
+  prefCPAH_C <- runPrefModelCPAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCategory psData_C
   let (fullCacheDir, prefTargetText) = case prefDTargetCategory of
         RegDTargets -> ("RFull/", "PID")
         VoteDTargets dShareTargetConfig -> ("Full/", DP.dShareTargetText dShareTargetConfig)
   let cacheMid =  fullCacheDir <> MC.actionSurveyText ac.acSurvey <> show year <> "_" <> MC.modelConfigText pc.pcModelConfig
       ahpsCacheSuffix = cacheMid
                         <> csAllCellPSPrefix cacheStructure
-                        <> maybe "" (("_" <>) .  scenarioCacheText) tScenarioM
+                        <> maybe "" (("_" <>) .  scenarioCacheText) aScenarioM
                         <> maybe "" (("_" <>) .  scenarioCacheText) pScenarioM
                         <>  "_" <> prefTargetText <> "_PS.bin"
   ahpsCacheKey <- BRCC.cacheFromDirE (csProjectCacheDirE cacheStructure) ahpsCacheSuffix
@@ -613,10 +627,10 @@ runFullModelAH year cacheStructure tc tScenarioM pc pScenarioM dShareTargetConfi
         psDen r = ppl r * t r
     pure $ FL.fold (psFold @l psNum psDen (view DT.popCount)) joined
   K.logLE K.Diagnostic "Running full model for CIs, if necessary"
-  fullPSForCI_C <- runBaseModel @l year (modelCacheStructure cacheStructure) (MC2.ActionAndPref mc tc pc) psData_C
+  fullPSForCI_C <- runBaseModel @l year (modelCacheStructure cacheStructure) (MC2.ActionAndPref mc ac pc) psData_C
 
   let cacheSuffix = cacheMid <> csPSName cacheStructure <>  "_"
-                    <> maybe "" (("_" <>) .  scenarioCacheText) tScenarioM
+                    <> maybe "" (("_" <>) .  scenarioCacheText) aScenarioM
                     <> maybe "" (("_" <>) .  scenarioCacheText) pScenarioM
                     <> prefTargetText <> "_resMap.bin"
       resMapDeps = (,) <$> fullAHPS_C <*> fullPSForCI_C
