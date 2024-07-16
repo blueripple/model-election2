@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
@@ -77,7 +78,7 @@ FTH.declareColumn "ModelPr" ''Double
 FTH.declareColumn "PSNumer" ''Double
 FTH.declareColumn "PSDenom" ''Double
 FTH.declareColumn "ModelCI" ''MT.ConfidenceInterval
-FTH.declareColumn "ModelT" ''Double
+FTH.declareColumn "ModelA" ''Double
 FTH.declareColumn "ModelP" ''Double
 
 data CacheStructure a b =
@@ -89,6 +90,9 @@ data CacheStructure a b =
   , csAllCellPSName :: a
   , csAllCellPSPrefix :: b
   }
+
+timed :: K.KnitEffects r => Text -> K.Sem r a -> K.Sem r a
+timed = K.logTiming (K.logLE K.Info)
 
 modelCacheStructure :: CacheStructure a b -> CacheStructure () ()
 modelCacheStructure (CacheStructure x y z _ _) = CacheStructure x y z () ()
@@ -117,17 +121,7 @@ cachedPreppedModelData cacheStructure = K.wrapPrefix "cachedPreppedModelData" $ 
 runBaseModel ::  forall l r ks a b .
                    (K.KnitEffects r
                    , BRCC.CacheEffects r
-                   , V.RMap l
-                   , Ord (F.Record l)
-                   , FS.RecFlat l
-                   , Typeable l
-                   , Typeable (DP.PSDataR ks)
-                   , F.ElemOf (DP.PSDataR ks) GT.StateAbbreviation
-                   , DP.LPredictorsR F.⊆ DP.PSDataR ks
-                   , F.ElemOf (DP.PSDataR ks) DT.PopCount
-                   , DP.DCatsR F.⊆ DP.PSDataR ks
-                   , l F.⊆ DP.PSDataR ks --'[GT.StateAbbreviation]
-                   , Show (F.Record l)
+                   , MC2.ElectionModelC l ks DP.CDKeyR
                    )
                 => Int
                 -> CacheStructure () ()
@@ -260,7 +254,7 @@ modelCPs :: forall r a b .
          -> MC2.Config a b
          -> K.Sem r (K.ActionWithCacheTime r (MC.PSMap StateAndCats MT.ConfidenceInterval, Maybe MC2.ModelParameters))
 modelCPs year cacheStructure config = K.wrapPrefix "modelCPs" $ do
-  modelData <- K.ignoreCacheTimeM $ cachedPreppedModelData $ modelCacheStructure cacheStructure
+  modelData <- timed "Loaded model data" $ K.ignoreCacheTimeM $ cachedPreppedModelData $ modelCacheStructure cacheStructure
   (allStates, avgPWPopPerSqMile) <- case config of
         MC2.ActionOnly _ ac -> case ac.acSurvey of
           MC.CESSurvey -> pure $ FL.fold ((,) <$> FL.premap (view GT.stateAbbreviation) FL.set <*> FL.premap (view DT.pWPopPerSqMile) FL.mean) modelData.cesData
@@ -297,11 +291,11 @@ stateActionTargets year cat = do
   case cat of
     MC.Reg -> do
       let stateRegCacheKey = "data/stateReg2022.bin"
-          innerFoldR :: FL.Fold (F.Record [RDH.VFPartyDem, RDH.VFPartyRep, RDH.VFPartyOth]) (F.Record '[TotalReg])
+          innerFoldR :: FL.Fold (F.Record [RDH.PartyDem, RDH.PartyRep, RDH.PartyOth]) (F.Record '[TotalReg])
           innerFoldR = (\d r o -> FT.recordSingleton @TotalReg $ d + r + o)
-                       <$> FL.premap (view RDH.vFPartyDem) FL.sum
-                       <*> FL.premap (view RDH.vFPartyRep) FL.sum
-                       <*> FL.premap (view RDH.vFPartyOth) FL.sum
+                       <$> FL.premap (view RDH.partyDem) FL.sum
+                       <*> FL.premap (view RDH.partyRep) FL.sum
+                       <*> FL.premap (view RDH.partyOth) FL.sum
           outerFoldR :: FL.Fold RDH.VF_Raw (F.FrameRec [GT.StateAbbreviation, TotalReg])
           outerFoldR = FMR.concatFold
                        $ FMR.mapReduceFold
@@ -334,7 +328,7 @@ runActionModelCPAH :: forall ks r a b .
                     -> Maybe (Scenario DP.PredictorsR)
                     -> K.ActionWithCacheTime r (DP.PSData ks)
                     -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec (AH ks '[ModelPr])))
-runActionModelCPAH year cacheStructure mc ac scenarioM psData_C = K.wrapPrefix "runTurnoutModelCPAH" $ do
+runActionModelCPAH year cacheStructure mc ac scenarioM psData_C = K.wrapPrefix "runActionModelCPAH" $ do
   actionCPs_C <- modelCPs year (allCellCacheStructure cacheStructure) (MC2.ActionOnly mc ac)
 --  let stFilter r = r ^. BRDF.year == year && r ^. GT.stateAbbreviation /= "US"
   stateActionTargets_C <- stateActionTargets year mc --fmap (fmap (F.filterFrame stFilter)) BRDF.stateTurnoutLoader
@@ -345,30 +339,35 @@ runActionModelCPAH year cacheStructure mc ac scenarioM psData_C = K.wrapPrefix "
         <> "_ACProbsAH.bin"
   cacheKey <- BRCC.cacheFromDirE (csProjectCacheDirE cacheStructure) cacheSuffix
   let ahDeps = (,,) <$> actionCPs_C <*> psData_C <*> stateActionTargets_C
-  BRCC.retrieveOrMakeFrame cacheKey ahDeps $ \((tCP, tMPm), psD, stateActionTargets) -> do
+  BRCC.retrieveOrMakeFrame cacheKey ahDeps $ \((tCP, tMPm), psD, stateActionTargets') -> do
     K.logLE K.Info "(Re)building AH adjusted all-cell probs."
     let probFrame =  fmap (\(ks, p) -> ks F.<+> FT.recordSingleton @ModelPr p) $ M.toList $ fmap MT.ciMid $ MC.unPSMap tCP
     tMP <- K.knitMaybe "runActionModelCPAH: Nothing in turnout ModelParameters after allCellProbs run!" $ tMPm
-    let (joined, missing) = FJ.leftJoinWithMissing
-                            @StateAndCats
-                            @(DP.PSDataR ks)
-                            @(StateCatsPlus '[ModelPr])
-                            (DP.unPSData psD) (F.toFrame probFrame)
+    let (!joined, missing) = FJ.leftJoinWithMissing
+                             @StateAndCats
+                             @(DP.PSDataR ks)
+                             @(StateCatsPlus '[ModelPr])
+                             (DP.unPSData psD) (F.toFrame probFrame)
         dmr = ac.acModelConfig.mcDesignMatrixRow
     when (not $ null missing) $ K.knitError $ "runActionModelCPAH: missing keys in psData/prob-frame join: " <> show missing
     let densAdjProbFrame = fmap (MC2.adjustPredictionsForDensity (view modelPr) (over modelPr . const) tMP dmr) joined
-    ahProbs <- FL.foldM (TA.adjTurnoutFoldG @ModelPr @'[GT.StateAbbreviation] @_  @(AHrs ks '[ModelPr])
-                         (realToFrac . view DT.popCount) (view DP.actionTarget) stateActionTargets) (fmap F.rcast densAdjProbFrame)
+    ahProbs <- timed "Doing AH fold for Action"
+               $ FL.foldM (TA.adjTurnoutFoldG @ModelPr @'[GT.StateAbbreviation] @_  @(AHrs ks '[ModelPr])
+                           (realToFrac . view DT.popCount) (view DP.actionTarget) stateActionTargets') (fmap F.rcast densAdjProbFrame)
     case scenarioM of
       Nothing -> pure ahProbs
       Just s -> pure $ fmap (applyScenario modelPr s) ahProbs
 
+type ActionModelC l ks =
+  (
+    PSTypeC l ks '[ModelPr]
+  , PSDataTypeTC ks
+  )
 
 runActionModelAH :: forall l ks r a b .
                     (K.KnitEffects r
                     , BRCC.CacheEffects r
-                    , PSTypeC l ks '[ModelPr]
-                    , PSDataTypeTC ks
+                    , ActionModelC l ks
                     )
                  => Int
                  -> CacheStructure Text Text
@@ -401,16 +400,16 @@ runActionModelAH year cacheStructure mc ac scenarioM psData_C = K.wrapPrefix "ru
       <$> (K.knitEither
             $ MM.mergeA (MM.traverseMissing whenMissingPS) (MM.traverseMissing whenMissingCI) (MM.zipWithAMatched whenMatched) psProbMap (MC.unPSMap cisM))
 
-type JoinPR ks = FJ.JoinResult3 StateAndCats (DP.PSDataR ks) (StateCatsPlus '[ModelPr]) (StateCatsPlus '[ModelT])
+type JoinPR ks = FJ.JoinResult3 StateAndCats (DP.PSDataR ks) (StateCatsPlus '[ModelPr]) (StateCatsPlus '[ModelA])
 
-type PSDataTypePC ks = ( FJ.CanLeftJoinWithMissing3 StateAndCats (DP.PSDataR ks) (StateCatsPlus '[ModelPr]) (StateCatsPlus '[ModelT])
-                       , FC.ElemsOf (JoinPR ks) [DT.PWPopPerSqMile, ModelPr, ModelT]
-                       , StateCatsPlus [ModelPr, ModelT, DT.PopCount] F.⊆ JoinPR ks
-                       , FC.ElemsOf (JoinPR ks) [GT.StateAbbreviation, ModelT]
-                       , AHC ks '[ModelPr, ModelT]
-                       , FC.ElemsOf (FT.Rename "ModelPr" "ModelT" (AH ks '[ModelPr])) (StateCatsPlus '[ModelT])
-                       , (GT.StateAbbreviation ': AHrs ks [ModelPr, ModelT]) F.⊆ JoinPR ks
-                       , DP.PredictorsR F.⊆ AH ks [ModelPr, ModelT]
+type PSDataTypePC ks = ( FJ.CanLeftJoinWithMissing3 StateAndCats (DP.PSDataR ks) (StateCatsPlus '[ModelPr]) (StateCatsPlus '[ModelA])
+                       , FC.ElemsOf (JoinPR ks) [DT.PWPopPerSqMile, ModelPr, ModelA]
+                       , StateCatsPlus [ModelPr, ModelA, DT.PopCount] F.⊆ JoinPR ks
+                       , FC.ElemsOf (JoinPR ks) [GT.StateAbbreviation, ModelA]
+                       , AHC ks '[ModelPr, ModelA]
+                       , FC.ElemsOf (FT.Rename "ModelPr" "ModelA" (AH ks '[ModelPr])) (StateCatsPlus '[ModelA])
+                       , (GT.StateAbbreviation ': AHrs ks [ModelPr, ModelA]) F.⊆ JoinPR ks
+                       , DP.PredictorsR F.⊆ AH ks [ModelPr, ModelA]
                        )
 
 -- For registration we use partisan id as the preference since some states don't have voters register for a particular party
@@ -428,7 +427,7 @@ statePrefDTargets cat cacheStructure = case cat of
     let statePIDCacheKey = "data/statePID2022.bin"
         regF = FL.prefilter ((== CES.VR_Active) . F.rgetField @CES.VRegistrationC) FL.length
         innerFold :: FL.Fold (F.Record [CES.VRegistrationC, CES.PartisanId3]) (F.Record '[DP.PrefDTarget])
-        innerFold = (\a d r -> FT.recordSingleton @DP.PrefDTarget $ if d + r > 0 then realToFrac d / realToFrac (d + r) else 0.5)
+        innerFold = (\_a d r -> FT.recordSingleton @DP.PrefDTarget $ if d + r > 0 then realToFrac d / realToFrac (d + r) else 0.5)
                     <$> regF
                     <*> FL.prefilter ((== CES.PI3_Democrat) . F.rgetField @CES.PartisanId3) regF
                     <*> FL.prefilter ((== CES.PI3_Republican) . F.rgetField @CES.PartisanId3) regF
@@ -458,7 +457,7 @@ runPrefModelCPAH :: forall ks r a b .
                  -> Maybe (Scenario DP.PredictorsR)
                  -> PrefDTargetCategory r -- DP.DShareTargetConfig r
                  -> K.ActionWithCacheTime r (DP.PSData ks)
-                 -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec (AH ks '[ModelPr, ModelT])))
+                 -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec (AH ks '[ModelPr, ModelA])))
 runPrefModelCPAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCategory psData_C = K.wrapPrefix "runPrefModelCPAH" $ do
   let mc = catFromPrefTargets prefDTargetCategory
   actionCPAH_C <- runActionModelCPAH year cacheStructure mc ac aScenarioM psData_C
@@ -477,31 +476,42 @@ runPrefModelCPAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCate
   cpahCacheKey <- BRCC.cacheFromDirE (csProjectCacheDirE cacheStructure) cacheSuffix
   BRCC.retrieveOrMakeFrame cpahCacheKey ahDeps $ \(tCPF, (pCP, pMPm), psD, prefTarget) -> do
     K.logLE K.Info "(Re)building AH adjusted all-cell probs."
-    let probFrame =  fmap (\(ks, p) -> ks F.<+> FT.recordSingleton @ModelPr p) $ M.toList $ fmap MT.ciMid $ MC.unPSMap pCP
-        turnoutFrame = fmap (F.rcast @(StateCatsPlus '[ModelT]) . FT.rename @"ModelPr" @"ModelT") tCPF
+    let probFrame =  F.toFrame $ fmap (\(ks, p) -> ks F.<+> FT.recordSingleton @ModelPr p) $ M.toList $ fmap MT.ciMid $ MC.unPSMap pCP
+        turnoutFrame = fmap (F.rcast @'[ModelA] . FT.rename @"ModelPr" @"ModelA") tCPF
     tMP <- K.knitMaybe "runTurnoutPrefAH: Nothing in pref ModelParameters after allCellProbs run!" $ pMPm
-    let (joined, missingPSPref, missingT) = FJ.leftJoin3WithMissing
-                            @StateAndCats
-                            (DP.unPSData psD) (F.toFrame probFrame) turnoutFrame
+    K.logLE K.Info $ "3-way join for Pref: psData has " <> show (F.frameLength (DP.unPSData psD))
+      <> " rows; probFrame has " <> show (F.frameLength probFrame)
+      <> " rows; turnoutFrame has " <> show (F.frameLength turnoutFrame) <> " rows."
+    let (joinedPref, missingPSPref) = FJ.leftJoinWithMissing
+                                      @StateAndCats
+                                      (DP.unPSData psD) probFrame
+        joined = F.zipFrames joinedPref turnoutFrame
+    K.logLE K.Info "HERE"
     when (not $ null missingPSPref) $ K.knitError $ "runPrefModelAH: missing keys in psData/prob-frame join: " <> show missingPSPref
-    when (not $ null missingT) $ K.knitError $ "runPrefModelAH: missing keys in psData+prob-frame/turnout frame join: " <> show missingT
+--    when (not $ null missingA) $ K.knitError $ "runPrefModelAH: missing keys in psData+prob-frame/turnout frame join: " <> show missingA
     let dmr = pc.pcModelConfig.mcDesignMatrixRow
         adjForDensity = MC2.adjustPredictionsForDensity (view modelPr) (over modelPr . const) tMP dmr
         densAdjProbFrame = fmap adjForDensity joined
-        modeledVoters r = r ^. modelT * realToFrac (r ^. DT.popCount)
-    ahProbs <- FL.foldM
-               (TA.adjTurnoutFoldG @ModelPr @'[GT.StateAbbreviation] @_ @(AHrs ks [ModelPr, ModelT]) modeledVoters (view DP.prefDTarget) prefTarget)
-               (fmap F.rcast densAdjProbFrame)
+        modeledVoters r = r ^. modelA * realToFrac (r ^. DT.popCount)
+    ahProbs <-  timed "Doing AH fold for Pref"
+                $ FL.foldM
+                (TA.adjTurnoutFoldG @ModelPr @'[GT.StateAbbreviation] @_ @(AHrs ks [ModelPr, ModelA]) modeledVoters (view DP.prefDTarget) prefTarget)
+                (fmap F.rcast densAdjProbFrame)
     case pScenarioM of
       Nothing -> pure ahProbs
       Just s -> pure $ fmap (applyScenario modelPr s) ahProbs
 
+type PrefModelC l ks =
+  (
+    PSTypeC l ks '[ModelPr, ModelA]
+  , PSDataTypeTC ks
+  , PSDataTypePC ks
+  )
+
 runPrefModelAH :: forall l ks r a b .
                   (K.KnitEffects r
                   , BRCC.CacheEffects r
-                  , PSTypeC l ks '[ModelPr, ModelT]
-                  , PSDataTypeTC ks
-                  , PSDataTypePC ks
+                  , PrefModelC l ks
                   )
                => Int
                -> CacheStructure Text Text
@@ -569,22 +579,28 @@ runFullModel year cacheStructure tc pc psData_C = K.wrapPrefix "runFullModel" $ 
   MC2.runModel (csModelDirE cacheStructure) (MC.turnoutSurveyText tc.tcSurvey <> "F_" <> show year) (csPSName cacheStructure)
     runConfig config modelData_C psData_C
 -}
-type ToJoinPR ks = FT.Rename "ModelPr" "ModelP" (AH ks '[ModelPr, ModelT]) --(ks V.++ (DP.DCatsR V.++ [ModelPr, DT.PopCount]))
+type ToJoinPR ks = FT.Rename "ModelPr" "ModelP" (AH ks '[ModelPr, ModelA]) --(ks V.++ (DP.DCatsR V.++ [ModelPr, DT.PopCount]))
 type JoinFR ks = FJ.JoinResult (ks V.++ DP.DCatsR) (DP.PSDataR ks) (ToJoinPR ks)
+
+type FullModelC l ks =
+  (
+    PSTypeC l ks '[ModelPr, ModelA]
+  , PSDataTypeTC ks
+  , PSDataTypePC ks
+  , FJ.CanLeftJoinWithMissing  (ks V.++ DP.DCatsR) (DP.PSDataR ks) (ToJoinPR ks)
+  , l F.⊆ JoinFR ks
+  , JoinFR ks F.⊆ JoinFR ks
+  , FC.ElemsOf (JoinFR ks) [DT.PopCount, ModelA, ModelP]
+  , V.RMap (l V.++ PSResultR)
+  , FS.RecFlat (l V.++ PSResultR)
+  , Show (F.Record (ks V.++ DP.DCatsR))
+  )
+
 
 runFullModelAH :: forall l ks r a b .
                   (K.KnitEffects r
                   , BRCC.CacheEffects r
-                  , PSTypeC l ks '[ModelPr, ModelT]
-                  , PSDataTypeTC ks
-                  , PSDataTypePC ks
-                  , FJ.CanLeftJoinWithMissing  (ks V.++ DP.DCatsR) (DP.PSDataR ks) (ToJoinPR ks)
-                  , l F.⊆ JoinFR ks
-                  , JoinFR ks F.⊆ JoinFR ks
-                  , FC.ElemsOf (JoinFR ks) [DT.PopCount, ModelT, ModelP]
-                  , V.RMap (l V.++ PSResultR)
-                  , FS.RecFlat (l V.++ PSResultR)
-                  , Show (F.Record (ks V.++ DP.DCatsR))
+                  , FullModelC l ks
                   )
                => Int
                -> CacheStructure Text Text
@@ -612,8 +628,8 @@ runFullModelAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCatego
   ahpsCacheKey <- BRCC.cacheFromDirE (csProjectCacheDirE cacheStructure) ahpsCacheSuffix
   let joinDeps = (,) <$> prefCPAH_C <*> psData_C
   fullAHPS_C <- BRCC.retrieveOrMakeFrame ahpsCacheKey joinDeps $ \(pref, psData) -> do
-    K.logLE K.Info "Doing 3-way join..."
-    let-- turnoutFrame = fmap (FT.rename @"ModelPr" @"ModelT") turnout
+    K.logLE K.Info "Doing psData/modeledPref join..."
+    let-- turnoutFrame = fmap (FT.rename @"ModelPr" @"ModelA") turnout
         prefFrame = fmap (FT.rename @"ModelPr" @"ModelP") pref
         (joined, missing) = FJ.leftJoinWithMissing
                             @(ks V.++ DP.DCatsR)
@@ -621,7 +637,7 @@ runFullModelAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCatego
     when (not $ null missing) $ K.knitError $ "runFullModelAH: Missing keys in psData/prefCPAH join: " <> show missing
     K.logLE K.Info "Doing post-stratification..."
     let ppl r = realToFrac $ r ^. DT.popCount
-        t r = r ^. modelT
+        t r = r ^. modelA
         p r = r ^. modelP
         psNum r = ppl r * t r * p r
         psDen r = ppl r * t r

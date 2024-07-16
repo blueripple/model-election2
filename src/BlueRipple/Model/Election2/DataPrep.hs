@@ -77,10 +77,12 @@ import Prelude hiding (pred)
 FS.declareColumn "SurveyWeight" ''Double
 FS.declareColumn "Surveyed" ''Int
 FS.declareColumn "Registered" ''Int
+FS.declareColumn "Registered2p" ''Int
 FS.declareColumn "Voted" ''Int
 
 FS.declareColumn "SurveyedW" ''Double
 FS.declareColumn "RegisteredW" ''Double
+FS.declareColumn "Registered2pW" ''Double
 FS.declareColumn "VotedW" ''Double
 
 FS.declareColumn "VotesInRace" ''Int
@@ -136,12 +138,12 @@ type CDKeyR = StateKeyR V.++ '[GT.CongressionalDistrict]
 
 type ElectionR = [Incumbency, ET.Unopposed, DVotes, RVotes, TVotes]
 
-type CountDataR = [SurveyWeight, Surveyed, Registered, Voted, SurveyedW, RegisteredW, VotedW]
+type CountDataR = [SurveyWeight, Surveyed, Registered,  Voted, SurveyedW, RegisteredW,  VotedW]
 type DCatsR = [DT.Age5C, DT.SexC, DT.Education4C, DT.Race5C]
 type LPredictorsR = '[DT.PWPopPerSqMile]
 type PredictorsR = LPredictorsR V.++ DCatsR
 type PrefPredictorsR = HouseIncumbency ': PredictorsR
-type PrefDataR = [VotesInRace, DVotes, RVotes, VotesInRaceW, DVotesW, RVotesW, DReg, RReg, DRegW, RRegW]
+type PrefDataR = [VotesInRace, DVotes, RVotes, VotesInRaceW, DVotesW, RVotesW, Registered2p, DReg, RReg, Registered2pW, DRegW, RRegW]
 
 type CESByR k = k V.++  PrefPredictorsR V.++ CountDataR V.++ PrefDataR
 type CESByCDR = CESByR CDKeyR
@@ -548,23 +550,24 @@ cesCountedDemPresVotesByState clearCaches = do
   BRCC.retrieveOrMakeFrame cacheKey ces2020_C $ \ces → cesMR @StateKeyR 2020 (F.rgetField @CCES.MPresVoteParty) ces
 
 
-countCESVotesF :: (FC.ElemsOf rs [CCES.VRegistrationC, CCES.PartisanId3, CCES.VTurnoutC, CCES.CESWeight])
+countCESVotesF :: (FC.ElemsOf rs [CCES.VRegistrationC, CCES.PartisanId3, CCES.PartisanId7, CCES.VTurnoutC, CCES.CESWeight])
                => (F.Record rs -> MT.MaybeData ET.PartyT)
                -> FL.Fold
                   (F.Record rs)
                   (F.Record (CountDataR V.++ PrefDataR))
 countCESVotesF votePartyMD =
   let vote (MT.MaybeData x) = maybe False (const True) x
+      vote2p (MT.MaybeData x) = maybe False (\y -> y == ET.Democratic || y == ET.Republican) x
       dVote (MT.MaybeData x) = maybe False (== ET.Democratic) x
       rVote (MT.MaybeData x) = maybe False (== ET.Republican) x
-      registered' = CCES.registered . view CCES.vRegistrationC
-      pidDem = (== CCES.PI3_Democrat) . F.rgetField @CCES.PartisanId3
-      pidRep = (== CCES.PI3_Republican) . F.rgetField @CCES.PartisanId3
+      reg' = CCES.registered . view CCES.vRegistrationC
+      reg2p r = reg' r && (pidDem r || pidRep r) -- for 2-party pref of reg denominator
       wgt = view CCES.cESWeight
       surveyedF = FL.length
-      registeredF = FL.prefilter registered' FL.length
+      registeredF = FL.prefilter reg' FL.length
+      registered2pF = FL.prefilter reg2p FL.length
       votedF = FL.prefilter (CCES.voted . view CCES.vTurnoutC) FL.length
-      votesF = FL.prefilter (vote . votePartyMD) votedF
+      votesF = FL.prefilter (vote2p . votePartyMD) votedF
       dVotesF = FL.prefilter (dVote . votePartyMD) votedF
       rVotesF = FL.prefilter (rVote . votePartyMD) votedF
       dRegF = FL.prefilter pidDem registeredF
@@ -572,21 +575,22 @@ countCESVotesF votePartyMD =
       surveyWgtF = FL.premap wgt FL.sum
       lmvskSurveyedF = FL.premap wgt FLS.fastLMVSK
       essSurveyedF = effSampleSizeFld lmvskSurveyedF
-      waRegisteredF = wgtdAverageBoolFld wgt (CCES.registered . view CCES.vRegistrationC)
+      waRegisteredF = wgtdAverageBoolFld wgt reg'
+      waRegistered2pF = wgtdAverageBoolFld wgt reg2p
       waVotedF = wgtdAverageBoolFld wgt (CCES.voted . view CCES.vTurnoutC)
 --      wVotesF = FL.prefilter (vote . votePartyMD) wSurveyedF
-      lmvskVotesF = FL.prefilter (vote . votePartyMD) lmvskSurveyedF
+      lmvskVotesF = FL.prefilter (vote2p . votePartyMD) lmvskSurveyedF
       essVotesF = effSampleSizeFld lmvskVotesF
       waDVotesF = wgtdAverageBoolFld wgt (dVote . votePartyMD)
       waRVotesF = wgtdAverageBoolFld wgt (rVote . votePartyMD)
-      waDRegF = wgtdAverageBoolFld wgt (\r -> registered' r && pidDem r)
-      waRRegF = wgtdAverageBoolFld wgt (\r -> registered' r && pidRep r)
-   in (\sw s r v eS waR waV vs dvs rvs eV waDV waRV dR rR wdR wrR →
+      waDRegF = wgtdAverageBoolFld wgt (\r -> reg' r && pidDem r)
+      waRRegF = wgtdAverageBoolFld wgt (\r -> reg' r && pidRep r)
+   in (\sw s r v eS war  waV vs dvs rvs eV waDV waRV r2p dR rR war2p wdR wrR →
           sw F.&: s F.&: r F.&: v
-          F.&: eS F.&: min eS (eS * waR) F.&: min eS (eS * waV)
+          F.&: eS F.&: min eS (eS * war)  F.&: min eS (eS * waV)
           F.&: vs F.&: dvs F.&: rvs
           F.&: eV F.&: min eV (eV * waDV) F.&: min eV (eV * waRV)
-          F.&: dR F.&: rR F.&: wdR F.&: wrR F.&: V.RNil)
+           F.&: r2p F.&: dR F.&: rR F.&: min eS (eS * war2p) F.&: wdR F.&: wrR F.&: V.RNil)
       <$> surveyWgtF
       <*> surveyedF
       <*> registeredF
@@ -600,10 +604,35 @@ countCESVotesF votePartyMD =
       <*> essVotesF
       <*> waDVotesF
       <*> waRVotesF
+      <*> registered2pF
       <*> dRegF
       <*> rRegF
+      <*> waRegistered2pF
       <*> waDRegF
       <*> waRRegF
+
+
+pidDem :: FC.ElemsOf rs [CCES.PartisanId3, CCES.PartisanId7] => F.Record rs -> Bool
+pidDem r = case F.rgetField @CCES.PartisanId3 r of
+  CCES.PI3_Democrat -> True
+  CCES.PI3_Republican -> False
+  _ -> case F.rgetField @CCES.PartisanId7 r of
+    CCES.PI7_StrongDem -> True
+    CCES.PI7_LeanDem -> True
+    CCES.PI7_WeakDem -> True
+    _ -> False
+
+
+pidRep :: FC.ElemsOf rs [CCES.PartisanId3, CCES.PartisanId7] => F.Record rs -> Bool
+pidRep r = case F.rgetField @CCES.PartisanId3 r of
+  CCES.PI3_Republican -> True
+  CCES.PI3_Democrat -> False
+  _ -> case F.rgetField @CCES.PartisanId7 r of
+    CCES.PI7_StrongRep -> True
+    CCES.PI7_LeanRep -> True
+    CCES.PI7_WeakRep -> True
+    _ -> False
+
 
 cesRecodeHispanic ∷ (F.ElemOf rs DT.HispC, F.ElemOf rs DT.Race5C) => F.Record rs -> F.Record rs
 cesRecodeHispanic r =
@@ -619,15 +648,9 @@ cesAddEducation4 r =
 -- using each year's common content
 cesMR ∷ forall lk rs f m .
         (Foldable f, Functor f, Monad m
-        , F.ElemOf rs BR.Year
-        , F.ElemOf rs DT.EducationC
-        , F.ElemOf rs DT.HispC
-        , F.ElemOf rs DT.Race5C
+        , FC.ElemsOf rs [BR.Year, DT.EducationC, DT.HispC, DT.Race5C, CCES.VRegistrationC, CCES.PartisanId3, CCES.PartisanId7, CCES.VTurnoutC, CCES.CESWeight]
+--        , F.ElemOf rs CCES.CCESWeight
         , rs F.⊆ (DT.Education4C ': rs)
-        , F.ElemOf rs CCES.VRegistrationC
-        , F.ElemOf rs CCES.PartisanId3
-        , F.ElemOf rs CCES.VTurnoutC
-        , F.ElemOf rs CCES.CESWeight
         , (lk V.++ DCatsR) V.++ (CountDataR V.++ PrefDataR) ~ (((lk V.++ DCatsR) V.++ CountDataR) V.++ PrefDataR)
         , Ord (F.Record (lk V.++ DCatsR))
         , (lk V.++ DCatsR) F.⊆ (DT.Education4C ': rs)

@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
@@ -171,17 +172,17 @@ prefModelData :: forall b gq lk . MC.ModelCategory -> MC.PrefConfig b
               -> SMB.StanBuilderM (DP.ModelData lk) gq (MC.ModelData (F.Record DP.CESByCDR) b)
 prefModelData c (MC.PrefConfig mc) = do
   let cesSurveyDataTag = SMB.dataSetTag @(F.Record DP.CESByCDR) SC.ModelData "CES"
-      uwAction :: forall rs md. (FC.ElemsOf rs [DP.VotesInRace, DP.Registered]) => SMB.RowTypeTag (F.Record rs) -> SMB.StanBuilderM md gq TE.IntArrayE
+      uwAction :: forall rs md. (FC.ElemsOf rs [DP.VotesInRace, DP.Registered2p]) => SMB.RowTypeTag (F.Record rs) -> SMB.StanBuilderM md gq TE.IntArrayE
       uwAction rtt = case c of
-        MC.Reg -> SBB.addCountData rtt "Registered" (view DP.registered)
+        MC.Reg -> SBB.addCountData rtt "Registered" (view DP.registered2p)
         MC.Vote -> SBB.addCountData rtt "VotesInRace" (view DP.votesInRace)
       uwPrefD :: forall rs md. (FC.ElemsOf rs [DP.DVotes, DP.DReg]) => SMB.RowTypeTag (F.Record rs) -> SMB.StanBuilderM md gq TE.IntArrayE
       uwPrefD rtt = case c of
         MC.Reg -> SBB.addCountData rtt "DReg" (view DP.dReg)
         MC.Vote -> SBB.addCountData rtt "DVotes" (view DP.dVotes)
-      wAction :: forall rs md. (FC.ElemsOf rs [DP.VotesInRaceW, DP.RegisteredW]) => SMB.RowTypeTag (F.Record rs) -> SMB.StanBuilderM md gq TE.VectorE
+      wAction :: forall rs md. (FC.ElemsOf rs [DP.VotesInRaceW, DP.Registered2pW]) => SMB.RowTypeTag (F.Record rs) -> SMB.StanBuilderM md gq TE.VectorE
       wAction rtt = case c of
-        MC.Reg -> SBB.addRealData rtt "Registered" (Just 0) Nothing (view DP.registeredW)
+        MC.Reg -> SBB.addRealData rtt "Registered" (Just 0) Nothing (view DP.registered2pW)
         MC.Vote -> SBB.addRealData rtt "VotesInRace" (Just 0) Nothing (view DP.votesInRaceW)
       wPrefD :: forall rs md. (FC.ElemsOf rs [DP.DVotesW, DP.DRegW]) => SMB.RowTypeTag (F.Record rs) -> SMB.StanBuilderM md gq TE.VectorE
       wPrefD rtt = case c of
@@ -683,24 +684,30 @@ model rc c states = case c of
             wgtsMCW = TE.NeedsCW $ fmap (`eltMultiply` SF.toVec psWgts) aProbsCW
         SBB.postStratifiedParameterF False SMB.SBGeneratedQuantities (Just $ psLabel <> "_byGrp") psRowTag gtt psDataGrpIndex wgtsMCW pProbsCW Nothing >> pure ()
 
+
+type ElectionModelC l k lk =
+  (
+    l F.⊆ DP.PSDataR k
+  , F.ElemOf (DP.PSDataR k) DT.PopCount
+  , DP.LPredictorsR F.⊆ DP.PSDataR k
+  , V.RMap l
+  , Ord (F.Record l)
+  , FS.RecFlat l
+  , Typeable (DP.PSDataR k)
+  , F.ElemOf (DP.PSDataR k) GT.StateAbbreviation
+  , F.ElemOf (DP.CESByR lk) GT.StateAbbreviation
+  , DP.DCatsR F.⊆ DP.PSDataR k
+  , DP.DCatsR F.⊆ DP.CESByR lk
+  , DP.LPredictorsR F.⊆ DP.CESByR lk
+  , Show (F.Record l)
+  , Typeable l
+  , Typeable (DP.CESByR lk)
+  )
+
 runModel :: forall l k lk r a b .
             (K.KnitEffects r
             , BRCC.CacheEffects r
-            , l F.⊆ DP.PSDataR k
-            , F.ElemOf (DP.PSDataR k) DT.PopCount
-            , DP.LPredictorsR F.⊆ DP.PSDataR k
-            , V.RMap l
-            , Ord (F.Record l)
-            , FS.RecFlat l
-            , Typeable (DP.PSDataR k)
-            , F.ElemOf (DP.PSDataR k) GT.StateAbbreviation
-            , F.ElemOf (DP.CESByR lk) GT.StateAbbreviation
-            , DP.DCatsR F.⊆ DP.PSDataR k
-            , DP.DCatsR F.⊆ DP.CESByR lk
-            , DP.LPredictorsR F.⊆ DP.CESByR lk
-            , Show (F.Record l)
-            , Typeable l
-            , Typeable (DP.CESByR lk)
+            , ElectionModelC l k lk
             )
          => Either Text Text
          -> Text
