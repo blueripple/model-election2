@@ -33,6 +33,7 @@ import qualified BlueRipple.Data.Small.Loaders as BRDF
 import qualified BlueRipple.Data.RDH_Voterfiles as RDH
 --import qualified BlueRipple.Configuration as BR
 import qualified BlueRipple.Data.CachingCore as BRCC
+import qualified BlueRipple.Data.LoadersCore as BRLC
 import qualified BlueRipple.Data.Types.Geographic as GT
 import qualified BlueRipple.Data.Types.Demographic as DT
 import qualified BlueRipple.Data.Types.Election as ET
@@ -88,7 +89,7 @@ data CacheStructure a b =
   , csProjectCacheDirE :: Either Text Text
   , csPSName :: Text
   , csAllCellPSName :: a
-  , csAllCellPSPrefix :: b
+  , csAllCellPSPrefix :: b -- used for AH adjusted
   }
 
 timed :: K.KnitEffects r => Text -> K.Sem r a -> K.Sem r a
@@ -242,6 +243,7 @@ type PSDataTypeTC ks = ( Typeable (DP.PSDataR ks)
                        , StateCatsPlus [ModelPr, DT.PopCount] F.⊆ JoinR ks '[ModelPr]
                        , AHC ks '[ModelPr]
                        , DP.PredictorsR F.⊆ AH ks '[ModelPr]
+                       , MC2.ElectionModelC StateAndCats ks DP.CDKeyR
                        )
 
 
@@ -697,6 +699,11 @@ allModelsCompChart :: forall ks r b pbase . (K.KnitOne r, BRCC.CacheEffects r, P
                                             , F.ElemOf (ks V.++ [DT.PopCount, ModelCI]) DT.PopCount
                                             , F.ElemOf (ks V.++ [DT.PopCount, ModelCI]) ModelCI
                                             , ks F.⊆ (ks V.++ [DT.PopCount, ModelCI])
+                                            , ks F.⊆ (ks V.++ '[ModelPr])
+                                            , FSI.RecVec (ks V.++ '[ModelPr])
+--                                            , F.ElemOf (ks V.++ '[ModelPr]) DT.PopCount
+                                            , ks F.⊆ (DP.StateKeyR V.++ DP.DCatsR V.++ DP.CountDataR V.++ DP.PrefDataR)
+                                            , F.ElemOf (ks V.++ '[ModelPr]) ModelPr
                                         )
                    => BRHJ.JsonLocations pbase
                    -> (Text -> MC.SurveyAggregation b -> MC.Alphas -> K.Sem r (K.ActionWithCacheTime r (MC.PSMap ks MT.ConfidenceInterval)))
@@ -708,12 +715,14 @@ allModelsCompChart :: forall ks r b pbase . (K.KnitOne r, BRCC.CacheEffects r, P
                    -> K.Sem r ()
 allModelsCompChart jsonLocations runModel catLabel modelType catText aggs' alphaModels' = do
   allModels <- allModelsCompBy @ks runModel catLabel aggs' alphaModels'
+  cesSurvey <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByState False
+  let cesComp = surveyDataBy @ks (Just $ MC.WeightedAggregation MC.ContinuousBinomial) cesSurvey
   let cats = Set.toList $ Keyed.elements @(F.Record ks)
       _numCats = length cats
       numSources = length allModels
   catCompChart <- categoryChart @ks jsonLocations (modelType <> " Comparison By Category") (modelType <> "Comp")
                   (FV.fixedSizeVC 300 (30 * realToFrac numSources) 10) (Just cats) (Just $ fmap fst allModels)
-                  catText allModels
+                  catText allModels (Just cesComp)
   _ <- K.addHvega Nothing Nothing catCompChart
   pure ()
 
@@ -810,12 +819,12 @@ surveyDataBy saM = FL.fold fld
     mwInnerFld =
       let sF = FL.premap (view DP.surveyedW) FL.sum
           vF = FL.premap (view DP.votedW) FL.sum
-      in (\s v -> safeDiv v s F.&: V.RNil) <$> sF <*> vF
+      in (\v s -> safeDiv v s F.&: V.RNil) <$> vF <*> sF
     wInnerFld :: FL.Fold (F.Record DP.CountDataR) (F.Record '[ModelPr])
     wInnerFld =
       let swF = FL.premap (view DP.surveyWeight) FL.sum
           swvF = FL.premap (\r -> view DP.surveyWeight r * realToFrac (view DP.voted r) / realToFrac (view DP.surveyed r)) FL.sum
-      in (\s v -> safeDiv v s F.&: V.RNil) <$> swF <*> swvF
+      in (\v s -> safeDiv v s F.&: V.RNil) <$> swvF <*> swF
 
     innerFld :: FL.Fold (F.Record DP.CountDataR) (F.Record '[ModelPr])
     innerFld = case saM of
@@ -909,7 +918,11 @@ stateChart jsonLocations chartID title modelType vc vap tgtM tableRowsByModel = 
 
 
 
-categoryChart :: forall ks rs pbase r . (K.KnitEffects r, F.ElemOf rs DT.PopCount, F.ElemOf rs ModelCI, ks F.⊆ rs)
+categoryChart :: forall ks rs pbase r . (K.KnitEffects r, F.ElemOf rs DT.PopCount, F.ElemOf rs ModelCI, ks F.⊆ rs
+                                        , ks F.⊆ (ks V.++ '[ModelPr])
+--                                        , F.ElemOf (ks V.++ '[ModelPr]) DT.PopCount
+                                        , F.ElemOf (ks V.++ '[ModelPr]) ModelPr
+                                        )
               => BRHJ.JsonLocations pbase
               -> Text
               -> Text
@@ -918,25 +931,38 @@ categoryChart :: forall ks rs pbase r . (K.KnitEffects r, F.ElemOf rs DT.PopCoun
               -> Maybe [Text]
               -> (F.Record ks -> Text)
               -> [(Text, F.FrameRec rs)] --[k, TurnoutCI, DT.PopCount])]
+              -> Maybe (F.FrameRec (ks V.++ '[ModelPr]))
               -> K.Sem r GV.VegaLite
-categoryChart jsonLocations title chartID vc catSortM sourceSortM catText tableRowsByModel = do
-  let colData (t, r)
+categoryChart jsonLocations title chartID vc catSortM sourceSortM catText tableRowsByModel surveyRowsM = do
+  let colDataModel (t, r)
         = [("Category", GV.Str $ catText $ F.rcast r)
-          , ("Ppl", GV.Number $ realToFrac  $ r ^. DT.popCount)
+--          , ("Ppl", GV.Number $ realToFrac  $ r ^. DT.popCount)
           , ("Lo", GV.Number $ MT.ciLower $ r ^. modelCI)
           , ("Mid", GV.Number $ MT.ciMid $ r ^. modelCI)
           , ("Hi", GV.Number $ MT.ciUpper $ r ^. modelCI)
           , ("Source", GV.Str t)
           ]
+      colDataSurvey r = [("Category", GV.Str $ catText $ F.rcast r)
+--                        , ("Ppl", GV.Number $ realToFrac  $ r ^. DT.popCount)
+                        , ("Lo", GV.Number $ r ^. modelPr)
+                        , ("Mid", GV.Number $ r ^. modelPr)
+                        , ("Hi", GV.Number $ r ^. modelPr)
+                        , ("Source", GV.Str "Survey")
+                        ]
 
 --      toData kltr = fmap ($ kltr) $ fmap colData [0..(n-1)]
-      jsonRows = FL.fold (VJ.rowsToJSON colData [] Nothing) $ concat $ fmap (\(s, fr) -> fmap (s,) $ FL.fold FL.list fr) tableRowsByModel
-  jsonFilePrefix <- K.getNextUnusedId $ ("statePSWithTargets_" <> chartID)
+      modelJsonRows = FL.fold (VJ.rowsToJSON colDataModel [] Nothing) $ concat $ fmap (\(s, fr) -> fmap (s,) $ FL.fold FL.list fr) tableRowsByModel
+  jsonRows <- case surveyRowsM of
+    Nothing -> pure modelJsonRows
+    Just surveyRows -> do
+      let surveyJsonRows = FL.fold (VJ.rowsToJSON colDataSurvey [] Nothing) surveyRows
+      K.knitMaybe "row merge problem in categoryChart" $ VJ.mergeJSONRows Nothing modelJsonRows surveyJsonRows
+--      jsonRows = surveyJsonRows <> tableJsonRows
+  jsonFilePrefix <- K.getNextUnusedId $ ("cc_modelPS_" <> chartID)
   jsonUrl <- BRHJ.addJSON jsonLocations jsonFilePrefix jsonRows
-
   let vlData = GV.dataFromUrl jsonUrl [GV.JSON "values"]
   --
-      xScale = GV.PScale [GV.SZero False]
+  let xScale = GV.PScale [GV.SZero False]
       xSort = case sourceSortM of
         Nothing -> []
         Just so -> [GV.PSort [GV.CustomSort $ GV.Strings so]]
@@ -962,4 +988,5 @@ categoryChart jsonLocations title chartID vc catSortM sourceSortM catText tableR
                                   , GV.facet [GV.RowBy ([GV.FName "Category", GV.FmType GV.Nominal] <> facetSort)]
                                   , GV.specification (GV.asSpec [layers])
                                   , vlData
+--                                  , GV.dataFromSource "model" []
                                   ]

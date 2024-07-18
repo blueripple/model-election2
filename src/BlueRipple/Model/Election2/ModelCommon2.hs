@@ -27,6 +27,7 @@ where
 --import qualified BlueRipple.Configuration as BR
 import qualified BlueRipple.Data.Small.Loaders as BRDF
 import qualified BlueRipple.Data.CachingCore as BRCC
+import qualified BlueRipple.Data.LoadersCore as BRLC
 import qualified BlueRipple.Model.Election2.DataPrep as DP
 import qualified BlueRipple.Data.Types.Demographic as DT
 import qualified BlueRipple.Data.Types.Geographic as GT
@@ -702,6 +703,9 @@ type ElectionModelC l k lk =
   , Show (F.Record l)
   , Typeable l
   , Typeable (DP.CESByR lk)
+  , V.RMap (DP.PSDataR k)
+  , V.RecordToList (DP.PSDataR k)
+  , V.ReifyConstraint Show F.ElField (DP.PSDataR k)
   )
 
 runModel :: forall l k lk r a b .
@@ -746,7 +750,6 @@ runModel modelDirE modelName gqName runConfig config modelData_C psData_C = do
           MC.WeightedAggregation MC.BetaProportion -> [SR.UnwrapExpr (pNum <> " / " <> pDenom) ("y" <> pFieldName <> "Rate_" <> rSuffix)]
           _ -> [SR.UnwrapNamed pFieldName ("y" <> pFieldName <> "_" <> rSuffix)]
         ActionAndPref _ _ _  -> [] -- what is a PP check for this combo case??
-
   res_C <- SMR.runModel' @BRCC.SerializerC @BRCC.CacheData
            modelDirE
            (Right runnerInputNames)
