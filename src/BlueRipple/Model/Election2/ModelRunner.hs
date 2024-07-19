@@ -682,6 +682,7 @@ allCellProbsPS states avgPWDensity =
                                               ]
   in DP.PSData $ F.toFrame allCellRecList
 
+
 modelCompBy :: forall ks r b . (K.KnitEffects r, BRCC.CacheEffects r, PSByC ks)
             => (Text -> MC.SurveyAggregation b -> MC.Alphas -> K.Sem r (K.ActionWithCacheTime r (MC.PSMap ks MT.ConfidenceInterval)))
             -> Text -> MC.SurveyAggregation b -> MC.Alphas -> K.Sem r (Text, F.FrameRec (ks V.++ '[DT.PopCount, ModelCI]))
@@ -701,7 +702,6 @@ allModelsCompChart :: forall ks r b pbase . (K.KnitOne r, BRCC.CacheEffects r, P
                                             , ks F.⊆ (ks V.++ [DT.PopCount, ModelCI])
                                             , ks F.⊆ (ks V.++ '[ModelPr])
                                             , FSI.RecVec (ks V.++ '[ModelPr])
---                                            , F.ElemOf (ks V.++ '[ModelPr]) DT.PopCount
                                             , ks F.⊆ (DP.StateKeyR V.++ DP.DCatsR V.++ DP.CountDataR V.++ DP.PrefDataR)
                                             , F.ElemOf (ks V.++ '[ModelPr]) ModelPr
                                         )
@@ -716,13 +716,15 @@ allModelsCompChart :: forall ks r b pbase . (K.KnitOne r, BRCC.CacheEffects r, P
 allModelsCompChart jsonLocations runModel catLabel modelType catText aggs' alphaModels' = do
   allModels <- allModelsCompBy @ks runModel catLabel aggs' alphaModels'
   cesSurvey <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByState False
-  let cesComp = surveyDataBy @ks (Just $ MC.WeightedAggregation MC.ContinuousBinomial) cesSurvey
+  let cesCompUW = surveyDataBy @ks (Just $ MC.UnweightedAggregation) cesSurvey
+      cesCompCB = surveyDataBy @ks (Just $ MC.WeightedAggregation MC.ContinuousBinomial) cesSurvey
+      cesCompW = surveyDataBy @ks Nothing cesSurvey
   let cats = Set.toList $ Keyed.elements @(F.Record ks)
       _numCats = length cats
       numSources = length allModels
   catCompChart <- categoryChart @ks jsonLocations (modelType <> " Comparison By Category") (modelType <> "Comp")
                   (FV.fixedSizeVC 300 (30 * realToFrac numSources) 10) (Just cats) (Just $ fmap fst allModels)
-                  catText allModels (Just cesComp)
+                  catText allModels (Just [("UW Survey", cesCompUW), ("Survey CB", cesCompCB), ("Survey W", cesCompW)])
   _ <- K.addHvega Nothing Nothing catCompChart
   pure ()
 
@@ -839,6 +841,27 @@ surveyDataBy saM = FL.fold fld
           (FMR.assignKeysAndData @ks @DP.CountDataR)
           (FMR.foldAndAddKey innerFld)
 
+surveyPSData :: forall ks rs . ((ks V.++ DP.DCatsR) F.⊆ rs
+                               , rs F.⊆ rs
+                               , DP.PSDataR ks F.⊆ (ks V.++ DP.DCatsR V.++ [DT.PopCount, DT.PWPopPerSqMile])
+                               , FSI.RecVec (ks V.++ DP.DCatsR V.++ [DT.PopCount, DT.PWPopPerSqMile])
+                               , Ord (F.Record (ks V.++ DP.DCatsR))
+                               )
+             => (F.Record rs -> Double)
+             -> (F.Record rs -> Double)
+             -> F.FrameRec rs
+             -> DP.PSData ks
+surveyPSData wgt dens = DP.PSData . fmap F.rcast . FL.fold fld
+  where
+    toRec :: (Double, Double) -> F.Record [DT.PopCount, DT.PWPopPerSqMile]
+    toRec (w, d) = round w F.&: d F.&: V.RNil
+    innerFld = fmap toRec $ DT.densityAndPopFld' DT.Geometric (const 1) wgt dens
+    fld = FMR.concatFold
+          $ FMR.mapReduceFold
+          FMR.noUnpack
+          (FMR.assignKeysAndData @(ks V.++ DP.DCatsR) @rs)
+          (FMR.foldAndAddKey innerFld)
+
 addBallotsCountedVAP :: (K.KnitEffects r, BRCC.CacheEffects r
                         , FJ.CanLeftJoinM '[GT.StateAbbreviation] rs BRDF.StateTurnoutCols
                         , F.ElemOf (rs V.++ (F.RDelete GT.StateAbbreviation BRDF.StateTurnoutCols)) GT.StateAbbreviation
@@ -931,7 +954,7 @@ categoryChart :: forall ks rs pbase r . (K.KnitEffects r, F.ElemOf rs DT.PopCoun
               -> Maybe [Text]
               -> (F.Record ks -> Text)
               -> [(Text, F.FrameRec rs)] --[k, TurnoutCI, DT.PopCount])]
-              -> Maybe (F.FrameRec (ks V.++ '[ModelPr]))
+              -> Maybe [(Text, F.FrameRec (ks V.++ '[ModelPr]))]
               -> K.Sem r GV.VegaLite
 categoryChart jsonLocations title chartID vc catSortM sourceSortM catText tableRowsByModel surveyRowsM = do
   let colDataModel (t, r)
@@ -942,20 +965,20 @@ categoryChart jsonLocations title chartID vc catSortM sourceSortM catText tableR
           , ("Hi", GV.Number $ MT.ciUpper $ r ^. modelCI)
           , ("Source", GV.Str t)
           ]
-      colDataSurvey r = [("Category", GV.Str $ catText $ F.rcast r)
---                        , ("Ppl", GV.Number $ realToFrac  $ r ^. DT.popCount)
-                        , ("Lo", GV.Number $ r ^. modelPr)
-                        , ("Mid", GV.Number $ r ^. modelPr)
-                        , ("Hi", GV.Number $ r ^. modelPr)
-                        , ("Source", GV.Str "Survey")
-                        ]
+      colDataSurvey (t, r) = [("Category", GV.Str $ catText $ F.rcast r)
+                             --                        , ("Ppl", GV.Number $ realToFrac  $ r ^. DT.popCount)
+                             , ("Lo", GV.Number $ r ^. modelPr)
+                             , ("Mid", GV.Number $ r ^. modelPr)
+                             , ("Hi", GV.Number $ r ^. modelPr)
+                             , ("Source", GV.Str t)
+                             ]
 
 --      toData kltr = fmap ($ kltr) $ fmap colData [0..(n-1)]
       modelJsonRows = FL.fold (VJ.rowsToJSON colDataModel [] Nothing) $ concat $ fmap (\(s, fr) -> fmap (s,) $ FL.fold FL.list fr) tableRowsByModel
   jsonRows <- case surveyRowsM of
     Nothing -> pure modelJsonRows
     Just surveyRows -> do
-      let surveyJsonRows = FL.fold (VJ.rowsToJSON colDataSurvey [] Nothing) surveyRows
+      let surveyJsonRows = FL.fold (VJ.rowsToJSON colDataSurvey [] Nothing) $ concat $ fmap (\(s, fr) -> fmap (s,) $ FL.fold FL.list fr) surveyRows
       K.knitMaybe "row merge problem in categoryChart" $ VJ.mergeJSONRows Nothing modelJsonRows surveyJsonRows
 --      jsonRows = surveyJsonRows <> tableJsonRows
   jsonFilePrefix <- K.getNextUnusedId $ ("cc_modelPS_" <> chartID)

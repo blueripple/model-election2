@@ -222,6 +222,9 @@ setupAlphaSum prefixM states alphas = do
       refAge = DT.A5_45To64
       refEducation = DT.E4_HSGrad
       refRace = DT.R5_WhiteNonHispanic
+  let zeroAG_C = do
+        let nds = TE.NamedDeclSpec (prefixed "alpha0") $ TE.realSpec []
+        pure $ SG.contramapGroupAlpha (view GT.stateAbbreviation) $ SG.zeroOrderAlpha $ stdNormalBP nds
   let stateAG_C = do
         muAlphaP <- DAG.simpleParameterWA
                     (TE.NamedDeclSpec (prefixed "muSt") $ TE.realSpec [])
@@ -356,6 +359,9 @@ setupAlphaSum prefixM states alphas = do
         pure $ SG.contramapGroupAlpha (\r -> (r ^. GT.stateAbbreviation, r ^. DT.education4C, r ^. DT.race5C))
           $ SG.thirdOrderAlpha prefixM MC.stateG stateI MC.eduG enumI MC.raceG enumI aStER_BP
   case alphas of
+    MC.A_S_E_R -> do
+      zeroAG <- zeroAG_C
+      SG.setupAlphaSum @_ @_ @_ @(F.Record GroupR) (zeroAG :> ageAG :> sexAG :> eduAG :> raceAG :> TNil)
     MC.St_A_S_E_R -> do
       stAG <- stateAG_C
       SG.setupAlphaSum @_ @_ @_ @(F.Record GroupR) (stAG :> ageAG :> sexAG :> eduAG :> raceAG :> TNil)

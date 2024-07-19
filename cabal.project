@@ -27,6 +27,7 @@ import: ../cabal_repo_imports/data-RDH-voterfiles.project
 import: ../cabal_repo_imports/model-tools.project
 import: ../cabal_repo_imports/model-demographic.project
 import: ../cabal_repo_imports/haskell-stan.project
+import: ../cabal_repo_imports/hs-cmdstan.project
 import: ../cabal_repo_imports/knit-haskell.project
 import: ../cabal_repo_imports/Frames-streamly.project
 import: ../cabal_repo_imports/Frames-serialize.project
