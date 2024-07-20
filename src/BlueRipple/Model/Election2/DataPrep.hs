@@ -550,7 +550,7 @@ cesCountedDemPresVotesByState clearCaches = do
   BRCC.retrieveOrMakeFrame cacheKey ces2020_C $ \ces → cesMR @StateKeyR 2020 (F.rgetField @CCES.MPresVoteParty) ces
 
 
-countCESVotesF :: (FC.ElemsOf rs [CCES.VRegistrationC, CCES.PartisanId3, CCES.PartisanId7, CCES.VTurnoutC, CCES.CESWeight])
+countCESVotesF :: (FC.ElemsOf rs [CCES.VRegistrationC, CCES.PartisanId3, CCES.PartisanId7, CCES.VTurnoutC, CCES.CESPostWeight])
                => (F.Record rs -> MT.MaybeData ET.PartyT)
                -> FL.Fold
                   (F.Record rs)
@@ -562,7 +562,7 @@ countCESVotesF votePartyMD =
       rVote (MT.MaybeData x) = maybe False (== ET.Republican) x
       reg' = CCES.registered . view CCES.vRegistrationC
       reg2p r = reg' r && (pidDem r || pidRep r) -- for 2-party pref of reg denominator
-      wgt = view CCES.cESWeight
+      wgt = view CCES.cESPostWeight
       surveyedF = FL.length
       registeredF = FL.prefilter reg' FL.length
       registered2pF = FL.prefilter reg2p FL.length
@@ -648,7 +648,7 @@ cesAddEducation4 r =
 -- using each year's common content
 cesMR ∷ forall lk rs f m .
         (Foldable f, Functor f, Monad m
-        , FC.ElemsOf rs [BR.Year, DT.EducationC, DT.HispC, DT.Race5C, CCES.VRegistrationC, CCES.PartisanId3, CCES.PartisanId7, CCES.VTurnoutC, CCES.CESWeight]
+        , FC.ElemsOf rs [BR.Year, DT.EducationC, DT.HispC, DT.Race5C, CCES.VRegistrationC, CCES.PartisanId3, CCES.PartisanId7, CCES.VTurnoutC, CCES.CESPostWeight]
 --        , F.ElemOf rs CCES.CCESWeight
         , rs F.⊆ (DT.Education4C ': rs)
         , (lk V.++ DCatsR) V.++ (CountDataR V.++ PrefDataR) ~ (((lk V.++ DCatsR) V.++ CountDataR) V.++ PrefDataR)

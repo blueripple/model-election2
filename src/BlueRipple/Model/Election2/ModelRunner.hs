@@ -717,14 +717,15 @@ allModelsCompChart jsonLocations runModel catLabel modelType catText aggs' alpha
   allModels <- allModelsCompBy @ks runModel catLabel aggs' alphaModels'
   cesSurvey <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByState False
   let cesCompUW = surveyDataBy @ks (Just $ MC.UnweightedAggregation) cesSurvey
-      cesCompCB = surveyDataBy @ks (Just $ MC.WeightedAggregation MC.ContinuousBinomial) cesSurvey
+      cesCompRW = surveyDataBy @ks (Just $ MC.RoundedWeightedAggregation) cesSurvey
+      cesCompDW = surveyDataBy @ks (Just $ MC.WeightedAggregation MC.ContinuousBinomial) cesSurvey
       cesCompW = surveyDataBy @ks Nothing cesSurvey
   let cats = Set.toList $ Keyed.elements @(F.Record ks)
       _numCats = length cats
       numSources = length allModels
   catCompChart <- categoryChart @ks jsonLocations (modelType <> " Comparison By Category") (modelType <> "Comp")
                   (FV.fixedSizeVC 300 (30 * realToFrac numSources) 10) (Just cats) (Just $ fmap fst allModels)
-                  catText allModels (Just [("UW Survey", cesCompUW), ("Survey CB", cesCompCB), ("Survey W", cesCompW)])
+                  catText allModels (Just [("UW Survey", cesCompUW),("RW Survey", cesCompRW), ("DW Survey", cesCompDW), ("W? Survey", cesCompW)])
   _ <- K.addHvega Nothing Nothing catCompChart
   pure ()
 
@@ -822,18 +823,23 @@ surveyDataBy saM = FL.fold fld
       let sF = FL.premap (view DP.surveyedW) FL.sum
           vF = FL.premap (view DP.votedW) FL.sum
       in (\v s -> safeDiv v s F.&: V.RNil) <$> vF <*> sF
+    rwInnerFld :: FL.Fold (F.Record DP.CountDataR) (F.Record '[ModelPr])
+    rwInnerFld =
+      let sF = FL.premap (realToFrac . round @_ @Int . view DP.surveyedW) FL.sum
+          vF = FL.premap (realToFrac . round @_ @Int . view DP.votedW) FL.sum
+      in (\v s -> safeDiv v s F.&: V.RNil) <$> vF <*> sF
     wInnerFld :: FL.Fold (F.Record DP.CountDataR) (F.Record '[ModelPr])
     wInnerFld =
       let swF = FL.premap (view DP.surveyWeight) FL.sum
           swvF = FL.premap (\r -> view DP.surveyWeight r * realToFrac (view DP.voted r) / realToFrac (view DP.surveyed r)) FL.sum
       in (\v s -> safeDiv v s F.&: V.RNil) <$> swvF <*> swF
-
     innerFld :: FL.Fold (F.Record DP.CountDataR) (F.Record '[ModelPr])
     innerFld = case saM of
-      Nothing -> mwInnerFld
+      Nothing -> wInnerFld
       Just sa -> case sa of
         MC.UnweightedAggregation -> uwInnerFld
-        MC.WeightedAggregation _ -> wInnerFld
+        MC.RoundedWeightedAggregation -> rwInnerFld
+        MC.WeightedAggregation _ -> mwInnerFld
     fld :: FL.Fold (F.Record rs) (F.FrameRec (ks V.++ '[ModelPr]))
     fld = FMR.concatFold
           $ FMR.mapReduceFold

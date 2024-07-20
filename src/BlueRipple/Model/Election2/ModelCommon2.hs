@@ -152,11 +152,16 @@ actionModelData c (MC.ActionConfig ts mc) = do
   let cpsSurveyDataTag = SMB.dataSetTag @(F.Record DP.CPSByStateR) SC.ModelData "CPS"
       cesSurveyDataTag = SMB.dataSetTag @(F.Record DP.CESByCDR) SC.ModelData "CES"
       uwSurveyed rtt = SBB.addCountData rtt "Surveyed" (view DP.surveyed)
+      rwSurveyed rtt = SBB.addCountData rtt "Surveyed" (round . view DP.surveyedW)
       wSurveyed rtt = SBB.addRealData rtt "Surveyed" (Just 0) Nothing (view DP.surveyedW)
       uwAction :: forall rs md. (FC.ElemsOf rs [DP.Voted, DP.Registered]) => SMB.RowTypeTag (F.Record rs) -> SMB.StanBuilderM md gq TE.IntArrayE
       uwAction rtt = case c of
         MC.Reg -> SBB.addCountData rtt "Registered" (view DP.registered)
         MC.Vote -> SBB.addCountData rtt "Voted" (view DP.voted)
+      rwAction :: forall rs md. (FC.ElemsOf rs [DP.VotedW, DP.RegisteredW]) => SMB.RowTypeTag (F.Record rs) -> SMB.StanBuilderM md gq TE.IntArrayE
+      rwAction rtt = case c of
+        MC.Reg -> SBB.addCountData rtt "Registered" (round . view DP.registeredW)
+        MC.Vote -> SBB.addCountData rtt "Voted" (round . view DP.votedW)
       wAction :: forall rs md. (FC.ElemsOf rs [DP.VotedW, DP.RegisteredW]) => SMB.RowTypeTag (F.Record rs) -> SMB.StanBuilderM md gq TE.VectorE
       wAction rtt = case c of
         MC.Reg -> SBB.addRealData rtt "Registered" (Just 0) Nothing (view DP.registeredW)
@@ -164,9 +169,11 @@ actionModelData c (MC.ActionConfig ts mc) = do
   case ts of
     MC.CPSSurvey -> case mc.mcSurveyAggregation of
       MC.UnweightedAggregation -> fmap MC.ModelData $ cpsSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc uwSurveyed uwAction
+      MC.RoundedWeightedAggregation -> fmap MC.ModelData $ cpsSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc rwSurveyed rwAction
       MC.WeightedAggregation _  -> fmap MC.ModelData $ cpsSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc wSurveyed wAction
     MC.CESSurvey -> case mc.mcSurveyAggregation of
       MC.UnweightedAggregation -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc uwSurveyed uwAction
+      MC.RoundedWeightedAggregation -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc rwSurveyed rwAction
       MC.WeightedAggregation _  -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc wSurveyed wAction
 
 prefModelData :: forall b gq lk . MC.ModelCategory -> MC.PrefConfig b
@@ -181,6 +188,14 @@ prefModelData c (MC.PrefConfig mc) = do
       uwPrefD rtt = case c of
         MC.Reg -> SBB.addCountData rtt "DReg" (view DP.dReg)
         MC.Vote -> SBB.addCountData rtt "DVotes" (view DP.dVotes)
+      rwAction :: forall rs md. (FC.ElemsOf rs [DP.VotesInRaceW, DP.Registered2pW]) => SMB.RowTypeTag (F.Record rs) -> SMB.StanBuilderM md gq TE.IntArrayE
+      rwAction rtt = case c of
+        MC.Reg -> SBB.addCountData rtt "Registered" (round . view DP.registered2pW)
+        MC.Vote -> SBB.addCountData rtt "VotesInRace" (round . view DP.votesInRaceW)
+      rwPrefD :: forall rs md. (FC.ElemsOf rs [DP.DVotesW, DP.DRegW]) => SMB.RowTypeTag (F.Record rs) -> SMB.StanBuilderM md gq TE.IntArrayE
+      rwPrefD rtt = case c of
+        MC.Reg -> SBB.addCountData rtt "DReg" (round . view DP.dRegW)
+        MC.Vote -> SBB.addCountData rtt "DVotes" (round . view DP.dVotesW)
       wAction :: forall rs md. (FC.ElemsOf rs [DP.VotesInRaceW, DP.Registered2pW]) => SMB.RowTypeTag (F.Record rs) -> SMB.StanBuilderM md gq TE.VectorE
       wAction rtt = case c of
         MC.Reg -> SBB.addRealData rtt "Registered" (Just 0) Nothing (view DP.registered2pW)
@@ -191,6 +206,7 @@ prefModelData c (MC.PrefConfig mc) = do
         MC.Vote -> SBB.addRealData rtt "DVotes" (Just 0) Nothing (view DP.dVotesW)
   case mc.mcSurveyAggregation of
     MC.UnweightedAggregation -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc uwAction uwPrefD
+    MC.RoundedWeightedAggregation -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc rwAction rwPrefD
     MC.WeightedAggregation _  -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc wAction wPrefD
 
 stdNormalDWA :: (TE.TypeOneOf t [TE.EReal, TE.ECVec, TE.ERVec], TE.GenSType t) => TE.DensityWithArgs t
@@ -575,6 +591,17 @@ components prefixM cc paramSetup sa = do
   lpCW <- logitProbCW paramSetup cc.ccSurveyDataTag covariatesM
   case sa of
     MC.UnweightedAggregation -> do
+      let ssf e lp =  SMB.familySample (SMD.binomialLogitDist @TE.EIntArray) e (n :> lp :> TNil)
+          modelCo = SMB.inBlock SMB.SBModel $ SMB.addFromCodeWriter (lpCW >>= TE.addStmt . ssf k)
+          ppCo =  SBB.generatePosteriorPredictionV
+                  (TE.NamedDeclSpec (prefixed "pred") $ TE.array1Spec nRowsE $ TE.intSpec [])
+                  SMD.binomialLogitDist
+                  (TE.NeedsCW $ lpCW >>= \x -> pure (n :> x :> TNil))
+          llCo = SBB.generateLogLikelihood cc.ccSurveyDataTag SMD.binomialLogitDist
+                 ((\x -> (\nE -> n `TE.at` nE :> x `TE.at` nE :> TNil)) <$> lpCW)
+                 (pure $ (k `TE.at`))
+      pure $ Components modelCo llCo (void ppCo) centerF
+    MC.RoundedWeightedAggregation -> do
       let ssf e lp =  SMB.familySample (SMD.binomialLogitDist @TE.EIntArray) e (n :> lp :> TNil)
           modelCo = SMB.inBlock SMB.SBModel $ SMB.addFromCodeWriter (lpCW >>= TE.addStmt . ssf k)
           ppCo =  SBB.generatePosteriorPredictionV

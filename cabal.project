@@ -1,4 +1,4 @@
-packages: ./ ~/DataScience/hvega-utils
+packages: ./ ~/DataScience/hvega-utils ../data-CES
 jobs: 4
 with-compiler: ghc
 
@@ -21,7 +21,7 @@ import: ../cabal_repo_imports/data-loading.project
 import: ../cabal_repo_imports/data-visualizations.project
 import: ../cabal_repo_imports/data-ACS-Tables.project
 import: ../cabal_repo_imports/data-ACS-PUMS.project
-import: ../cabal_repo_imports/data-CES.project
+--import: ../cabal_repo_imports/data-CES.project
 import: ../cabal_repo_imports/data-CPS-VS.project
 import: ../cabal_repo_imports/data-RDH-voterfiles.project
 import: ../cabal_repo_imports/model-tools.project
