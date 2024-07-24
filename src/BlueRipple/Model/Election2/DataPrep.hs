@@ -193,6 +193,13 @@ data ModelData lk =
   , cesData :: F.FrameRec (CESByR lk)
   }
 
+cesDataVotePref :: (FI.RecVec (CESByR lk), F.ElemOf (CESByR lk) VotesInRace) => ModelData lk -> F.FrameRec (CESByR lk)
+cesDataVotePref = F.filterFrame ((> 0) . view votesInRace) . cesData
+
+cesDataRegPref :: (FI.RecVec (CESByR lk), F.ElemOf (CESByR lk) Registered2p) => ModelData lk -> F.FrameRec (CESByR lk)
+cesDataRegPref = F.filterFrame ((> 0) . view registered2p) . cesData
+
+
 instance (FS.RecFlat (CESByR lk), V.RMap (CESByR lk), FI.RecVec (CESByR lk)) => Flat.Flat (ModelData lk) where
   size (ModelData cps ces) n = Flat.size (FS.SFrame cps, FS.SFrame ces) n
   encode (ModelData cps ces)  = Flat.encode (FS.SFrame cps, FS.SFrame ces)
@@ -385,10 +392,9 @@ designEffect lmvsk = 1 + x
 designEffectFld :: FL.Fold a FLS.LMVSK -> FL.Fold a Double
 designEffectFld = fmap designEffect
 
--- NB: sample size is unweighted number of samples, "count" here
 effSampleSize :: FLS.LMVSK -> Double
-effSampleSize lmvsk = sumWeights / deff where
-  sumWeights = realToFrac (FLS.lmvskCount lmvsk)
+effSampleSize lmvsk = n / deff where
+  n = realToFrac (FLS.lmvskCount lmvsk)
   deff = designEffect lmvsk
 
 effSampleSizeFld :: FL.Fold a FLS.LMVSK -> FL.Fold a Double
@@ -408,6 +414,11 @@ wgtdAverageBoolFld wgt f = g <$> wgtF <*> wgtdF
     wgtdF = FL.prefilter f wgtF
     g sumWgts sumWgtd = if (sumWgts == 0) then 0 else sumWgtd / sumWgts
 
+wgtdBoolFld :: (a -> Double) -> (a -> Bool) -> FL.Fold a Double
+wgtdBoolFld wgt f = FL.prefilter f (FL.premap wgt FL.sum)
+
+withEffSampleSize :: Double -> Int -> Int -> Double
+withEffSampleSize ess n d = if d > 0 then ess * realToFrac n / realToFrac d else 0
 
 cpsCountedTurnoutByState ∷ (K.KnitEffects r, BRCC.CacheEffects r) ⇒ K.Sem r (K.ActionWithCacheTime r (F.FrameRec (StateKeyR V.++ DCatsR V.++ CountDataR)))
 cpsCountedTurnoutByState = do
@@ -425,12 +436,11 @@ cpsCountedTurnoutByState = do
             votedFld = FL.prefilter vtd FL.length
             wgt = view CPS.cPSVoterPUMSWeight
             surveyWgtF = FL.premap wgt FL.sum
-            waRegisteredFld = wgtdAverageBoolFld wgt rgstd
-            waVotedFld = wgtdAverageBoolFld wgt vtd
             lmvskFld = FL.premap wgt FLS.fastLMVSK
             essFld = effSampleSizeFld lmvskFld
-        in (\aw s r v ess waR waV -> aw F.&: s F.&: r F.&: v F.&: ess F.&: min ess (ess * waR) F.&: min ess (ess * waV) F.&: V.RNil)
-           <$> surveyWgtF <*> surveyedFld <*> registeredFld <*> votedFld <*> essFld <*> waRegisteredFld <*> waVotedFld
+        in (\aw s r v ess -> aw F.&: s F.&: r F.&: v F.&: ess
+                             F.&: (ess * realToFrac r / realToFrac s) F.&: (ess * realToFrac v / realToFrac s) F.&: V.RNil)
+           <$> surveyWgtF <*> surveyedFld <*> registeredFld <*> votedFld <*> essFld
       fld :: FL.Fold (F.Record CPS.CPSVoterPUMS) (F.FrameRec (StateKeyR V.++ DCatsR V.++ CountDataR))
       fld = FMR.concatFold
             $ FMR.mapReduceFold
@@ -532,41 +542,54 @@ cachedPreppedCES2 cacheE ces_C = do
 -- an example for presidential 2020 vote.
 cesCountedDemPresVotesByCD ∷ (K.KnitEffects r, BRCC.CacheEffects r)
                        ⇒ Bool
+                       -> WeightingStyle
                        → K.Sem r (K.ActionWithCacheTime r (F.FrameRec (CDKeyR V.++ DCatsR V.++ CountDataR V.++ PrefDataR)))
-cesCountedDemPresVotesByCD clearCaches = do
+cesCountedDemPresVotesByCD clearCaches weightingStyle = do
   ces2020_C ← CCES.ces20Loader
-  let cacheKey = "model/election2/ces20ByCD.bin"
+  let cacheKey = "model/election2/ces20ByCD_" <> weightingStyleText weightingStyle <> ".bin"
   when clearCaches $ BRCC.clearIfPresentD cacheKey
-  BRCC.retrieveOrMakeFrame cacheKey ces2020_C $ \ces → cesMR @CDKeyR 2020 (F.rgetField @CCES.MPresVoteParty) ces
+  BRCC.retrieveOrMakeFrame cacheKey ces2020_C $ \ces → cesMR @CDKeyR weightingStyle 2020 (F.rgetField @CCES.MPresVoteParty) ces
 
 
 cesCountedDemPresVotesByState ∷ (K.KnitEffects r, BRCC.CacheEffects r)
                               ⇒ Bool
+                              -> WeightingStyle
                               → K.Sem r (K.ActionWithCacheTime r (F.FrameRec (StateKeyR V.++ DCatsR V.++ CountDataR V.++ PrefDataR)))
-cesCountedDemPresVotesByState clearCaches = do
+cesCountedDemPresVotesByState clearCaches weightingStyle = do
   ces2020_C ← CCES.ces20Loader
-  let cacheKey = "model/election2/ces20ByState.bin"
+  let cacheKey = "model/election2/ces20ByState_" <>  weightingStyleText weightingStyle <> ".bin"
   when clearCaches $ BRCC.clearIfPresentD cacheKey
-  BRCC.retrieveOrMakeFrame cacheKey ces2020_C $ \ces → cesMR @StateKeyR 2020 (F.rgetField @CCES.MPresVoteParty) ces
+  BRCC.retrieveOrMakeFrame cacheKey ces2020_C $ \ces → cesMR @StateKeyR weightingStyle 2020 (F.rgetField @CCES.MPresVoteParty) ces
 
+
+data WeightingStyle = FullWeights | DesignEffectWeights deriving (Show, Eq)
+
+weightingStyleText :: WeightingStyle -> Text
+weightingStyleText FullWeights = "fw"
+weightingStyleText DesignEffectWeights = "de"
 
 countCESVotesF :: (FC.ElemsOf rs [CCES.VRegistrationC, CCES.PartisanId3, CCES.PartisanId7, CCES.VTurnoutC, CCES.CESPostWeight])
-               => (F.Record rs -> MT.MaybeData ET.PartyT)
+               => WeightingStyle
+               -> (F.Record rs -> MT.MaybeData ET.PartyT)
                -> FL.Fold
                   (F.Record rs)
                   (F.Record (CountDataR V.++ PrefDataR))
-countCESVotesF votePartyMD =
+countCESVotesF weightingStyle votePartyMD =
   let vote (MT.MaybeData x) = maybe False (const True) x
+      safeDiv x y = if y /= 0 then x / y else 0
+      voted = CCES.voted . view CCES.vTurnoutC
       vote2p (MT.MaybeData x) = maybe False (\y -> y == ET.Democratic || y == ET.Republican) x
       dVote (MT.MaybeData x) = maybe False (== ET.Democratic) x
       rVote (MT.MaybeData x) = maybe False (== ET.Republican) x
       reg' = CCES.registered . view CCES.vRegistrationC
       reg2p r = reg' r && (pidDem r || pidRep r) -- for 2-party pref of reg denominator
+      reg2pD r = reg2p r && pidDem r
+      reg2pR r = reg2p r && pidRep r
       wgt = view CCES.cESPostWeight
       surveyedF = FL.length
       registeredF = FL.prefilter reg' FL.length
       registered2pF = FL.prefilter reg2p FL.length
-      votedF = FL.prefilter (CCES.voted . view CCES.vTurnoutC) FL.length
+      votedF = FL.prefilter voted FL.length
       votesF = FL.prefilter (vote2p . votePartyMD) votedF
       dVotesF = FL.prefilter (dVote . votePartyMD) votedF
       rVotesF = FL.prefilter (rVote . votePartyMD) votedF
@@ -574,42 +597,51 @@ countCESVotesF votePartyMD =
       rRegF = FL.prefilter pidRep registeredF
       surveyWgtF = FL.premap wgt FL.sum
       lmvskSurveyedF = FL.premap wgt FLS.fastLMVSK
-      essSurveyedF = effSampleSizeFld lmvskSurveyedF
-      waRegisteredF = wgtdAverageBoolFld wgt reg'
-      waRegistered2pF = wgtdAverageBoolFld wgt reg2p
-      waVotedF = wgtdAverageBoolFld wgt (CCES.voted . view CCES.vTurnoutC)
---      wVotesF = FL.prefilter (vote . votePartyMD) wSurveyedF
+      wRegF = case weightingStyle of
+        FullWeights -> wgtdBoolFld wgt reg'
+        DesignEffectWeights -> withEffSampleSize <$> effSampleSizeFld lmvskSurveyedF <*> registeredF <*> surveyedF
+      wVotedF = case weightingStyle of
+        FullWeights -> wgtdBoolFld wgt voted
+        DesignEffectWeights -> withEffSampleSize <$> effSampleSizeFld lmvskSurveyedF <*> votedF <*> surveyedF
       lmvskVotesF = FL.prefilter (vote2p . votePartyMD) lmvskSurveyedF
-      essVotesF = effSampleSizeFld lmvskVotesF
-      waDVotesF = wgtdAverageBoolFld wgt (dVote . votePartyMD)
-      waRVotesF = wgtdAverageBoolFld wgt (rVote . votePartyMD)
-      waDRegF = wgtdAverageBoolFld wgt (\r -> reg' r && pidDem r)
-      waRRegF = wgtdAverageBoolFld wgt (\r -> reg' r && pidRep r)
-   in (\sw s r v eS war  waV vs dvs rvs eV waDV waRV r2p dR rR war2p wdR wrR →
+      wdVotesF = case weightingStyle of
+        FullWeights -> wgtdBoolFld wgt (dVote . votePartyMD)
+        DesignEffectWeights -> withEffSampleSize <$> effSampleSizeFld lmvskVotesF <*> dVotesF <*> votesF
+      wrVotesF = case weightingStyle of
+        FullWeights -> wgtdBoolFld wgt (rVote . votePartyMD)
+        DesignEffectWeights -> withEffSampleSize <$> effSampleSizeFld lmvskVotesF <*> rVotesF <*> votesF
+      lmvskReg2pF = FL.prefilter reg2p lmvskSurveyedF
+      wdRegF = case weightingStyle of
+        FullWeights -> wgtdBoolFld wgt reg2pD
+        DesignEffectWeights -> withEffSampleSize <$> effSampleSizeFld lmvskReg2pF <*> dRegF <*> registered2pF
+      wrRegF = case weightingStyle of
+        FullWeights -> wgtdBoolFld wgt reg2pR
+        DesignEffectWeights -> withEffSampleSize <$> effSampleSizeFld lmvskReg2pF <*> rRegF <*> registered2pF
+   in (\sw s r v eS wr wv vs dvs rvs eV wdv wrv r2p dR rR er2p wdR wrR →
           sw F.&: s F.&: r F.&: v
-          F.&: eS F.&: min eS (eS * war)  F.&: min eS (eS * waV)
+          F.&: eS F.&: wr  F.&: wv
           F.&: vs F.&: dvs F.&: rvs
-          F.&: eV F.&: min eV (eV * waDV) F.&: min eV (eV * waRV)
-           F.&: r2p F.&: dR F.&: rR F.&: min eS (eS * war2p) F.&: wdR F.&: wrR F.&: V.RNil)
+          F.&: eV F.&: wdv F.&: wrv
+          F.&: r2p F.&: dR F.&: rR F.&: er2p F.&: wdR F.&: wrR F.&: V.RNil)
       <$> surveyWgtF
       <*> surveyedF
       <*> registeredF
       <*> votedF
-      <*> essSurveyedF
-      <*> waRegisteredF
-      <*> waVotedF
+      <*> effSampleSizeFld lmvskSurveyedF
+      <*> wRegF
+      <*> wVotedF
       <*> votesF
       <*> dVotesF
       <*> rVotesF
-      <*> essVotesF
-      <*> waDVotesF
-      <*> waRVotesF
+      <*> effSampleSizeFld lmvskVotesF
+      <*> wdVotesF
+      <*> wrVotesF
       <*> registered2pF
       <*> dRegF
       <*> rRegF
-      <*> waRegistered2pF
-      <*> waDRegF
-      <*> waRRegF
+      <*> effSampleSizeFld lmvskReg2pF
+      <*> wdRegF
+      <*> wrRegF
 
 
 pidDem :: FC.ElemsOf rs [CCES.PartisanId3, CCES.PartisanId7] => F.Record rs -> Bool
@@ -656,12 +688,12 @@ cesMR ∷ forall lk rs f m .
         , (lk V.++ DCatsR) F.⊆ (DT.Education4C ': rs)
         , FI.RecVec (((lk V.++ DCatsR) V.++ CountDataR) V.++ PrefDataR)
         )
-      ⇒ Int → (F.Record rs -> MT.MaybeData ET.PartyT) -> f (F.Record rs) → m (F.FrameRec (lk V.++ DCatsR V.++ CountDataR V.++ PrefDataR))
-cesMR earliestYear votePartyMD =
+      ⇒ WeightingStyle -> Int → (F.Record rs -> MT.MaybeData ET.PartyT) -> f (F.Record rs) → m (F.FrameRec (lk V.++ DCatsR V.++ CountDataR V.++ PrefDataR))
+cesMR weightingStyle earliestYear votePartyMD =
   BRF.frameCompactMR
   (FMR.unpackFilterOnField @BR.Year (>= earliestYear))
   (FMR.assignKeysAndData @(lk V.++ DCatsR) @rs)
-  (countCESVotesF votePartyMD)
+  (countCESVotesF weightingStyle votePartyMD)
   . fmap (cesAddEducation4 . cesRecodeHispanic)
 
 -- vote targets

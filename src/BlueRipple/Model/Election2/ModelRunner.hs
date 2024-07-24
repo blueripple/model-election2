@@ -114,8 +114,8 @@ cachedPreppedModelData cacheStructure = K.wrapPrefix "cachedPreppedModelData" $ 
       cpsModelCacheE = bimap (appendCacheFile "CPSModelData.bin") (appendCacheFile "CPSModelData.bin") cacheDirE'
       cesByStateModelCacheE = bimap (appendCacheFile "CESModelData.bin") (appendCacheFile "CESByStateModelData.bin") cacheDirE'
       cesByCDModelCacheE = bimap (appendCacheFile "CESModelData.bin") (appendCacheFile "CESByCDModelData.bin") cacheDirE'
-  rawCESByCD_C <- DP.cesCountedDemPresVotesByCD False
-  rawCESByState_C <- DP.cesCountedDemPresVotesByState False
+  rawCESByCD_C <- DP.cesCountedDemPresVotesByCD False DP.DesignEffectWeights
+  rawCESByState_C <- DP.cesCountedDemPresVotesByState False DP.DesignEffectWeights
   rawCPS_C <- DP.cpsCountedTurnoutByState
   DP.cachedPreppedModelDataCD cpsModelCacheE rawCPS_C cesByStateModelCacheE rawCESByState_C cesByCDModelCacheE rawCESByCD_C
 
@@ -353,9 +353,12 @@ runActionModelCPAH year cacheStructure mc ac scenarioM psData_C = K.wrapPrefix "
         dmr = ac.acModelConfig.mcDesignMatrixRow
     when (not $ null missing) $ K.knitError $ "runActionModelCPAH: missing keys in psData/prob-frame join: " <> show missing
     let densAdjProbFrame = fmap (MC2.adjustPredictionsForDensity (view modelPr) (over modelPr . const) tMP dmr) joined
+        densAdjProbFrame' = case mc of
+          MC.Reg -> F.filterFrame ((/= "DC") . view GT.stateAbbreviation) densAdjProbFrame
+          MC.Vote -> densAdjProbFrame
     ahProbs <- timed "Doing AH fold for Action"
                $ FL.foldM (TA.adjTurnoutFoldG @ModelPr @'[GT.StateAbbreviation] @_  @(AHrs ks '[ModelPr])
-                           (realToFrac . view DT.popCount) (view DP.actionTarget) stateActionTargets') (fmap F.rcast densAdjProbFrame)
+                           (realToFrac . view DT.popCount) (view DP.actionTarget) stateActionTargets') (fmap F.rcast densAdjProbFrame')
     case scenarioM of
       Nothing -> pure ahProbs
       Just s -> pure $ fmap (applyScenario modelPr s) ahProbs
@@ -395,12 +398,13 @@ runActionModelAH year cacheStructure mc ac scenarioM psData_C = K.wrapPrefix "ru
   BRCC.retrieveOrMakeD ahResultCachePrefix resMapDeps $ \(ahps, (cisM, _)) -> do
     K.logLE K.Info "merging AH probs and CIs"
     let psProbMap = M.fromList $ fmap (\r -> (F.rcast @l r, r ^. modelPr)) $ FL.fold FL.list ahps
-        whenMatched _ p ci = Right $ adjustCI p ci
-        whenMissingPS l _ = Left $ "runActionModelAH: key present in model CIs is missing from AHPS: " <> show l
-        whenMissingCI l _ = Left $ "runActionModelAH: key present in AHPS is missing from CIs: " <> show l
+        whenMatched _ p ci = pure $ adjustCI p ci
+        whenMissingPS l _ = K.knitError $ "runActionModelAH: key present in model CIs is missing from AHPS: " <> show l
+        whenMissingCI l ci = do
+          K.logLE K.Warning $ "runActionModelAH: key present in AHPS is missing from CIs: " <> show l <> ". Using unadjusted."
+          pure ci
     MC.PSMap
-      <$> (K.knitEither
-            $ MM.mergeA (MM.traverseMissing whenMissingPS) (MM.traverseMissing whenMissingCI) (MM.zipWithAMatched whenMatched) psProbMap (MC.unPSMap cisM))
+      <$> MM.mergeA (MM.traverseMissing whenMissingPS) (MM.traverseMissing whenMissingCI) (MM.zipWithAMatched whenMatched) psProbMap (MC.unPSMap cisM)
 
 type JoinPR ks = FJ.JoinResult3 StateAndCats (DP.PSDataR ks) (StateCatsPlus '[ModelPr]) (StateCatsPlus '[ModelA])
 
@@ -488,7 +492,6 @@ runPrefModelCPAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCate
                                       @StateAndCats
                                       (DP.unPSData psD) probFrame
         joined = F.zipFrames joinedPref turnoutFrame
-    K.logLE K.Info "HERE"
     when (not $ null missingPSPref) $ K.knitError $ "runPrefModelAH: missing keys in psData/prob-frame join: " <> show missingPSPref
 --    when (not $ null missingA) $ K.knitError $ "runPrefModelAH: missing keys in psData+prob-frame/turnout frame join: " <> show missingA
     let dmr = pc.pcModelConfig.mcDesignMatrixRow
@@ -524,7 +527,7 @@ runPrefModelAH :: forall l ks r a b .
                -> PrefDTargetCategory r --DP.DShareTargetConfig r
                -> K.ActionWithCacheTime r (DP.PSData ks)
                -> K.Sem r (K.ActionWithCacheTime r (MC.PSMap l MT.ConfidenceInterval))
-runPrefModelAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCategory psData_C = K.wrapPrefix "ruPrefModelAH" $ do
+runPrefModelAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCategory psData_C = K.wrapPrefix "runPrefModelAH" $ do
   let mc = catFromPrefTargets prefDTargetCategory
   prefCPAH_C <- runPrefModelCPAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCategory psData_C
   let psNum r = (realToFrac $ r ^. DT.popCount) * r ^. modelPr
@@ -545,12 +548,13 @@ runPrefModelAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCatego
   BRCC.retrieveOrMakeD ahCacheKey resMapDeps $ \(ahps, (cisM, _)) -> do
     K.logLE K.Info "merging AH probs and CIs"
     let psProbMap = M.fromList $ fmap (\r -> (F.rcast @l r, r ^. modelPr)) $ FL.fold FL.list ahps
-        whenMatched _ p ci = Right $ adjustCI p ci
-        whenMissingPS l _ = Left $ "runPrefModelAH: key present in model CIs is missing from AHPS: " <> show l
-        whenMissingCI l _ = Left $ "runPrefModelAH: key present in AHPS is missing from CIs: " <> show l
+        whenMatched _ p ci = pure $ adjustCI p ci
+        whenMissingPS l _ = K.knitError $ "runPrefModelAH: key present in model CIs is missing from AHPS: " <> show l
+        whenMissingCI l ci = do
+          K.logLE K.Warning $ "runPrefModelAH: key present in AHPS is missing from CIs: " <> show l <> ". Continuing with unadjusted."
+          pure ci
     MC.PSMap
-      <$> (K.knitEither
-            $ MM.mergeA (MM.traverseMissing whenMissingPS) (MM.traverseMissing whenMissingCI) (MM.zipWithAMatched whenMatched) psProbMap (MC.unPSMap cisM))
+      <$> MM.mergeA (MM.traverseMissing whenMissingPS) (MM.traverseMissing whenMissingCI) (MM.zipWithAMatched whenMatched) psProbMap (MC.unPSMap cisM)
 
 {-
 runFullModel :: forall l r ks a b .
@@ -687,8 +691,9 @@ modelCompBy :: forall ks r b . (K.KnitEffects r, BRCC.CacheEffects r, PSByC ks)
             => (Text -> MC.SurveyAggregation b -> MC.Alphas -> K.Sem r (K.ActionWithCacheTime r (MC.PSMap ks MT.ConfidenceInterval)))
             -> Text -> MC.SurveyAggregation b -> MC.Alphas -> K.Sem r (Text, F.FrameRec (ks V.++ '[DT.PopCount, ModelCI]))
 modelCompBy runModel catLabel agg am = do
-          comp <- psBy @ks (runModel catLabel agg am)
-          pure (MC.aggregationText agg <> "_" <> MC.alphasText am, comp)
+  K.logLE K.Info $ "Model Comp By for " <> catLabel
+  comp <- psBy @ks (runModel catLabel agg am)
+  pure (MC.aggregationText agg <> "_" <> MC.alphasText am, comp)
 
 allModelsCompBy :: forall ks r b . (K.KnitEffects r, BRCC.CacheEffects r, PSByC ks)
                 => (Text -> MC.SurveyAggregation b -> MC.Alphas -> K.Sem r (K.ActionWithCacheTime r (MC.PSMap ks MT.ConfidenceInterval)))
@@ -696,16 +701,23 @@ allModelsCompBy :: forall ks r b . (K.KnitEffects r, BRCC.CacheEffects r, PSByC 
 allModelsCompBy runModel catLabel aggs' alphaModels' =
   traverse (\(agg, am) -> modelCompBy @ks runModel catLabel agg am) [(agg, am) | agg <- aggs',  am <- alphaModels']
 
+forStatesChart ::  (F.RDelete ModelCI (ks V.++ '[DT.PopCount, ModelCI]) V.++ '[ModelPr] F.⊆ ('[ModelPr] V.++ (ks V.++ '[DT.PopCount, ModelCI]))
+                   , F.ElemOf (ks V.++ '[DT.PopCount, ModelCI]) ModelCI)
+               => Text -> [(Text, F.FrameRec (ks V.++ '[DT.PopCount, ModelCI]))]
+               -> [(Text, F.FrameRec (F.RDelete ModelCI (ks V.++ '[DT.PopCount, ModelCI]) V.++ '[ModelPr]))]
+forStatesChart t = fmap (first (t <>))  . fmap (second $ fmap modelCIToModelPr)
+
 allModelsCompChart :: forall ks r b pbase . (K.KnitOne r, BRCC.CacheEffects r, PSByC ks, Keyed.FiniteSet (F.Record ks)
                                             , F.ElemOf (ks V.++ [DT.PopCount, ModelCI]) DT.PopCount
                                             , F.ElemOf (ks V.++ [DT.PopCount, ModelCI]) ModelCI
                                             , ks F.⊆ (ks V.++ [DT.PopCount, ModelCI])
                                             , ks F.⊆ (ks V.++ '[ModelPr])
                                             , FSI.RecVec (ks V.++ '[ModelPr])
-                                            , ks F.⊆ (DP.StateKeyR V.++ DP.DCatsR V.++ DP.CountDataR V.++ DP.PrefDataR)
+                                            , ks F.⊆ (DP.CDKeyR V.++ DP.DCatsR V.++ DP.CountDataR V.++ DP.PrefDataR)
                                             , F.ElemOf (ks V.++ '[ModelPr]) ModelPr
                                         )
                    => BRHJ.JsonLocations pbase
+                   -> (forall c. SurveyDataBy ks (DP.CDKeyR V.++ DP.DCatsR V.++ DP.CountDataR V.++ DP.PrefDataR) c)
                    -> (Text -> MC.SurveyAggregation b -> MC.Alphas -> K.Sem r (K.ActionWithCacheTime r (MC.PSMap ks MT.ConfidenceInterval)))
                    -> Text
                    -> Text
@@ -713,19 +725,23 @@ allModelsCompChart :: forall ks r b pbase . (K.KnitOne r, BRCC.CacheEffects r, P
                    -> [MC.SurveyAggregation b]
                    -> [MC.Alphas]
                    -> K.Sem r ()
-allModelsCompChart jsonLocations runModel catLabel modelType catText aggs' alphaModels' = do
+allModelsCompChart jsonLocations surveyDataBy runModel catLabel modelType catText aggs' alphaModels' = do
   allModels <- allModelsCompBy @ks runModel catLabel aggs' alphaModels'
-  cesSurvey <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByState False
-  let cesCompUW = surveyDataBy @ks (Just $ MC.UnweightedAggregation) cesSurvey
-      cesCompRW = surveyDataBy @ks (Just $ MC.RoundedWeightedAggregation) cesSurvey
-      cesCompDW = surveyDataBy @ks (Just $ MC.WeightedAggregation MC.ContinuousBinomial) cesSurvey
-      cesCompW = surveyDataBy @ks Nothing cesSurvey
+  cesSurveyPW <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False DP.FullWeights
+  cesSurveyDEW <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False DP.DesignEffectWeights
+  let cesCompUW = surveyDataBy (Just $ MC.UnweightedAggregation) cesSurveyPW
+      cesCompW = surveyDataBy  Nothing cesSurveyPW
+      cesCompPW = surveyDataBy  (Just $ MC.RoundedWeightedAggregation) cesSurveyPW
+      cesCompRPW = surveyDataBy (Just $ MC.WeightedAggregation MC.ContinuousBinomial) cesSurveyPW
+      cesCompDW = surveyDataBy (Just $ MC.RoundedWeightedAggregation) cesSurveyDEW
+      cesCompRDW = surveyDataBy (Just $ MC.WeightedAggregation MC.ContinuousBinomial) cesSurveyDEW
   let cats = Set.toList $ Keyed.elements @(F.Record ks)
       _numCats = length cats
       numSources = length allModels
   catCompChart <- categoryChart @ks jsonLocations (modelType <> " Comparison By Category") (modelType <> "Comp")
-                  (FV.fixedSizeVC 300 (30 * realToFrac numSources) 10) (Just cats) (Just $ fmap fst allModels)
-                  catText allModels (Just [("UW Survey", cesCompUW),("RW Survey", cesCompRW), ("DW Survey", cesCompDW), ("W? Survey", cesCompW)])
+                  (FV.fixedSizeVC 300 (50 * realToFrac numSources) 10) (Just cats) (Just $ fmap fst allModels)
+                  catText allModels (Just [("UW Survey", cesCompUW),("RDW Survey", cesCompRDW), ("DW Survey", cesCompDW)
+                                          ,("RPW Survey", cesCompRPW), ("PW Survey", cesCompPW), ("W Survey", cesCompW)])
   _ <- K.addHvega Nothing Nothing catCompChart
   pure ()
 
@@ -755,7 +771,7 @@ psBy runModel = do
     let whenMatched :: F.Record ks -> MT.ConfidenceInterval -> Int -> Either Text (F.Record  (ks V.++ [DT.PopCount, ModelCI]))
         whenMatched k t p = pure $ k F.<+> (p F.&: t F.&: V.RNil :: F.Record [DT.PopCount, ModelCI])
         whenMissingPC k _ = Left $ "psBy: " <> show k <> " is missing from PopCount map."
-        whenMissingT k _ = Left $ "psBy: " <> show k <> " is missing from ps map."
+        whenMissingT k _ = Left $ "psBy: " <> show k <> " is missing from probs map."
     mergedMap <- K.knitEither
                  $ MM.mergeA (MM.traverseMissing whenMissingPC) (MM.traverseMissing whenMissingT) (MM.zipWithAMatched whenMatched) psMap pcMap
     pure $ F.toFrame $ M.elems mergedMap
@@ -800,8 +816,16 @@ popCountByMap = fmap (FL.fold (FL.premap keyValue FL.map)) . popCountBy @ks wher
   keyValue r = (F.rcast @ks r, r ^. DT.popCount)
 
 
+type SurveyDataBy ks rs a =
+                (Ord (F.Record ks)
+                , ks F.⊆ rs
+--                , DP.CountDataR F.⊆ rs
+--                , DP.PrefDataR  F.⊆ rs
+                , FSI.RecVec (ks V.++ '[ModelPr])
+                )
+             => Maybe (MC.SurveyAggregation a) -> F.FrameRec rs -> F.FrameRec (ks V.++ '[ModelPr])
 
-
+{-
 surveyDataBy :: forall ks rs a .
                 (Ord (F.Record ks)
                 , ks F.⊆ rs
@@ -809,7 +833,9 @@ surveyDataBy :: forall ks rs a .
                 , FSI.RecVec (ks V.++ '[ModelPr])
                 )
              => Maybe (MC.SurveyAggregation a) -> F.FrameRec rs -> F.FrameRec (ks V.++ '[ModelPr])
-surveyDataBy saM = FL.fold fld
+-}
+turnoutDataBy :: forall ks rs a. (DP.CountDataR F.⊆ rs) => SurveyDataBy ks rs a
+turnoutDataBy saM = FL.fold fld
   where
     safeDiv :: Double -> Double -> Double
     safeDiv x y = if (y /= 0) then x / y else 0
@@ -817,16 +843,16 @@ surveyDataBy saM = FL.fold fld
     uwInnerFld =
       let sF = fmap realToFrac $ FL.premap (view DP.surveyed) FL.sum
           vF = fmap realToFrac $ FL.premap (view DP.voted) FL.sum
-      in (\s v -> safeDiv v s F.&: V.RNil) <$> sF <*> vF
-    mwInnerFld :: FL.Fold (F.Record DP.CountDataR) (F.Record '[ModelPr])
-    mwInnerFld =
+      in (\v s -> safeDiv v s F.&: V.RNil) <$> vF <*> sF
+    dwInnerFld :: FL.Fold (F.Record DP.CountDataR) (F.Record '[ModelPr])
+    dwInnerFld =
       let sF = FL.premap (view DP.surveyedW) FL.sum
           vF = FL.premap (view DP.votedW) FL.sum
       in (\v s -> safeDiv v s F.&: V.RNil) <$> vF <*> sF
-    rwInnerFld :: FL.Fold (F.Record DP.CountDataR) (F.Record '[ModelPr])
-    rwInnerFld =
-      let sF = FL.premap (realToFrac . round @_ @Int . view DP.surveyedW) FL.sum
-          vF = FL.premap (realToFrac . round @_ @Int . view DP.votedW) FL.sum
+    rdwInnerFld :: FL.Fold (F.Record DP.CountDataR) (F.Record '[ModelPr])
+    rdwInnerFld =
+      let sF = fmap realToFrac $ FL.premap (round @_ @Int . view DP.surveyedW) FL.sum
+          vF = fmap realToFrac $ FL.premap (round @_ @Int . view DP.votedW) FL.sum
       in (\v s -> safeDiv v s F.&: V.RNil) <$> vF <*> sF
     wInnerFld :: FL.Fold (F.Record DP.CountDataR) (F.Record '[ModelPr])
     wInnerFld =
@@ -838,13 +864,91 @@ surveyDataBy saM = FL.fold fld
       Nothing -> wInnerFld
       Just sa -> case sa of
         MC.UnweightedAggregation -> uwInnerFld
-        MC.RoundedWeightedAggregation -> rwInnerFld
-        MC.WeightedAggregation _ -> mwInnerFld
+        MC.RoundedWeightedAggregation -> rdwInnerFld
+        MC.WeightedAggregation _ -> dwInnerFld
     fld :: FL.Fold (F.Record rs) (F.FrameRec (ks V.++ '[ModelPr]))
     fld = FMR.concatFold
           $ FMR.mapReduceFold
           FMR.noUnpack
           (FMR.assignKeysAndData @ks @DP.CountDataR)
+          (FMR.foldAndAddKey innerFld)
+
+regDataBy :: forall ks rs a. (DP.CountDataR F.⊆ rs) => SurveyDataBy ks rs a
+regDataBy saM = FL.fold fld
+  where
+    safeDiv :: Double -> Double -> Double
+    safeDiv x y = if (y /= 0) then x / y else 0
+    uwInnerFld :: FL.Fold (F.Record DP.CountDataR) (F.Record '[ModelPr])
+    uwInnerFld =
+      let sF = fmap realToFrac $ FL.premap (view DP.surveyed) FL.sum
+          vF = fmap realToFrac $ FL.premap (view DP.registered) FL.sum
+      in (\v s -> safeDiv v s F.&: V.RNil) <$> vF <*> sF
+    dwInnerFld :: FL.Fold (F.Record DP.CountDataR) (F.Record '[ModelPr])
+    dwInnerFld =
+      let sF = FL.premap (view DP.surveyedW) FL.sum
+          vF = FL.premap (view DP.registeredW) FL.sum
+      in (\v s -> safeDiv v s F.&: V.RNil) <$> vF <*> sF
+    rdwInnerFld :: FL.Fold (F.Record DP.CountDataR) (F.Record '[ModelPr])
+    rdwInnerFld =
+      let sF = fmap realToFrac $ FL.premap (round @_ @Int . view DP.surveyedW) FL.sum
+          vF = fmap realToFrac $ FL.premap (round @_ @Int . view DP.registeredW) FL.sum
+      in (\v s -> safeDiv v s F.&: V.RNil) <$> vF <*> sF
+    wInnerFld :: FL.Fold (F.Record DP.CountDataR) (F.Record '[ModelPr])
+    wInnerFld =
+      let swF = FL.premap (view DP.surveyWeight) FL.sum
+          swvF = FL.premap (\r -> view DP.surveyWeight r * realToFrac (view DP.registered r) / realToFrac (view DP.surveyed r)) FL.sum
+      in (\v s -> safeDiv v s F.&: V.RNil) <$> swvF <*> swF
+    innerFld :: FL.Fold (F.Record DP.CountDataR) (F.Record '[ModelPr])
+    innerFld = case saM of
+      Nothing -> wInnerFld
+      Just sa -> case sa of
+        MC.UnweightedAggregation -> uwInnerFld
+        MC.RoundedWeightedAggregation -> rdwInnerFld
+        MC.WeightedAggregation _ -> dwInnerFld
+    fld :: FL.Fold (F.Record rs) (F.FrameRec (ks V.++ '[ModelPr]))
+    fld = FMR.concatFold
+          $ FMR.mapReduceFold
+          FMR.noUnpack
+          (FMR.assignKeysAndData @ks @DP.CountDataR)
+          (FMR.foldAndAddKey innerFld)
+
+prefDataBy :: forall ks rs a. (DP.CountDataR V.++ DP.PrefDataR F.⊆ rs) => SurveyDataBy ks rs a
+prefDataBy saM = FL.fold fld
+  where
+    safeDiv :: Double -> Double -> Double
+    safeDiv x y = if (y /= 0) then x / y else 0
+    uwInnerFld :: FL.Fold  (F.Record (DP.CountDataR V.++ DP.PrefDataR)) (F.Record '[ModelPr])
+    uwInnerFld =
+      let sF = fmap realToFrac $ FL.premap (view DP.votesInRace) FL.sum
+          vF = fmap realToFrac $ FL.premap (view DP.dVotes) FL.sum
+      in (\v s -> safeDiv v s F.&: V.RNil) <$> vF <*> sF
+    dwInnerFld :: FL.Fold  (F.Record (DP.CountDataR V.++ DP.PrefDataR)) (F.Record '[ModelPr])
+    dwInnerFld =
+      let sF = FL.premap (view DP.votesInRaceW) FL.sum
+          vF = FL.premap (view DP.dVotesW) FL.sum
+      in (\v s -> safeDiv v s F.&: V.RNil) <$> vF <*> sF
+    rdwInnerFld :: FL.Fold  (F.Record (DP.CountDataR V.++ DP.PrefDataR)) (F.Record '[ModelPr])
+    rdwInnerFld =
+      let sF = fmap realToFrac $ FL.premap (round @_ @Int . view DP.votesInRaceW) FL.sum
+          vF = fmap realToFrac $ FL.premap (round @_ @Int . view DP.dVotesW) FL.sum
+      in (\v s -> safeDiv v s F.&: V.RNil) <$> vF <*> sF
+    wInnerFld :: FL.Fold  (F.Record (DP.CountDataR V.++ DP.PrefDataR)) (F.Record '[ModelPr])
+    wInnerFld =
+      let swF = FL.premap (view DP.surveyWeight) FL.sum
+          swvF = FL.premap (\r -> view DP.surveyWeight r * realToFrac (view DP.dVotes r) / realToFrac (view DP.votesInRace r)) FL.sum
+      in (\v s -> safeDiv v s F.&: V.RNil) <$> swvF <*> swF
+    innerFld :: FL.Fold (F.Record (DP.CountDataR V.++ DP.PrefDataR)) (F.Record '[ModelPr])
+    innerFld = case saM of
+      Nothing -> wInnerFld
+      Just sa -> case sa of
+        MC.UnweightedAggregation -> uwInnerFld
+        MC.RoundedWeightedAggregation -> rdwInnerFld
+        MC.WeightedAggregation _ -> dwInnerFld
+    fld :: FL.Fold (F.Record rs) (F.FrameRec (ks V.++ '[ModelPr]))
+    fld = FMR.concatFold
+          $ FMR.mapReduceFold
+          FMR.noUnpack
+          (FMR.assignKeysAndData @ks @(DP.CountDataR V.++ DP.PrefDataR))
           (FMR.foldAndAddKey innerFld)
 
 surveyPSData :: forall ks rs . ((ks V.++ DP.DCatsR) F.⊆ rs

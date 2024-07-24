@@ -50,6 +50,7 @@ import qualified Data.Vector.Unboxed as VU
 import qualified Data.Vinyl as V
 
 import qualified Frames as F
+import qualified Frames.Streamly.InCore as FSI
 import qualified Frames.Melt as F
 import qualified Frames.Serialize as FS
 import qualified Frames.Constraints as FC
@@ -108,6 +109,11 @@ usesCES c = case actionSurvey c of
     MC.CESSurvey -> True
     _ -> False
 
+usesCESPref :: Config a b -> Bool
+usesCESPref (ActionOnly _ _)  = False
+usesCESPref (PrefOnly _ _) = True
+usesCESPref (ActionAndPref _ _ _) = True
+
 configText :: forall a b. Config a b -> Text
 configText (ActionOnly c (MC.ActionConfig as mc)) = case c of
   MC.Reg -> "Reg" <> MC.actionSurveyText as <> "_" <> MC.modelConfigText mc
@@ -135,6 +141,8 @@ groupBuilder :: forall g k lk l a b .
                  , DP.DCatsR F.⊆ DP.PSDataR k
                  , DP.DCatsR F.⊆ DP.CESByR lk
                  , Typeable (DP.CESByR lk)
+                 , FSI.RecVec (DP.CESByR lk)
+                 , FC.ElemsOf (DP.CESByR lk) [DP.Registered2p, DP.VotesInRace]
                  )
                => Config a b
                -> g Text
@@ -144,7 +152,22 @@ groupBuilder config states psKeys = do
   let groups' = MC.groups states
   when (usesCPS config) $ SMB.addModelDataToGroupBuilder "CPS" (SMB.ToFoldable DP.cpsData) >>= MC.addGroupIndexesAndIntMaps groups'
   when (usesCES config) $ SMB.addModelDataToGroupBuilder "CES" (SMB.ToFoldable DP.cesData) >>= MC.addGroupIndexesAndIntMaps groups'
+  when (usesCESPref config) $ case configModelCategory config of
+    MC.Reg -> SMB.addModelDataToGroupBuilder "CESP" (SMB.ToFoldable DP.cesDataRegPref) >>= MC.addGroupIndexesAndIntMaps groups'
+    MC.Vote -> SMB.addModelDataToGroupBuilder "CESP" (SMB.ToFoldable DP.cesDataVotePref) >>= MC.addGroupIndexesAndIntMaps groups'
   MC.psGroupBuilder states psKeys
+
+-- Given 2 real numbers x and y , find the two integers k, l
+-- such that |x - k| < 1, |y - l| < 1 and minimizing |1 - ky/lx|
+-- that is, we minimize the difference of the log of the probabilities
+roundFraction :: Double -> Double -> (Int, Int)
+roundFraction x y = fst $ List.head $ sortOn snd $ withMetric where
+  possible_kl = [(floor x, floor y), (floor x, ceiling y), (ceiling x, floor y), (ceiling x, ceiling y)]
+  metric (k, l) = abs $ 1 - ((realToFrac k * y) / (realToFrac l * x))
+  withMetric = zip possible_kl $ fmap metric possible_kl
+
+rfVia :: (a -> Double) -> (a -> Double) -> a -> (Int, Int)
+rfVia getX getY a = roundFraction (getX a) (getY a)
 
 actionModelData :: forall a b gq lk . MC.ModelCategory -> MC.ActionConfig a b
                  -> SMB.StanBuilderM (DP.ModelData lk) gq (MC.ModelData a b)
@@ -179,7 +202,7 @@ actionModelData c (MC.ActionConfig ts mc) = do
 prefModelData :: forall b gq lk . MC.ModelCategory -> MC.PrefConfig b
               -> SMB.StanBuilderM (DP.ModelData lk) gq (MC.ModelData (F.Record DP.CESByCDR) b)
 prefModelData c (MC.PrefConfig mc) = do
-  let cesSurveyDataTag = SMB.dataSetTag @(F.Record DP.CESByCDR) SC.ModelData "CES"
+  let cesSurveyDataTag = SMB.dataSetTag @(F.Record DP.CESByCDR) SC.ModelData "CESP"
       uwAction :: forall rs md. (FC.ElemsOf rs [DP.VotesInRace, DP.Registered2p]) => SMB.RowTypeTag (F.Record rs) -> SMB.StanBuilderM md gq TE.IntArrayE
       uwAction rtt = case c of
         MC.Reg -> SBB.addCountData rtt "Registered" (view DP.registered2p)
@@ -745,6 +768,8 @@ runModel :: forall l k lk r a b .
             (K.KnitEffects r
             , BRCC.CacheEffects r
             , ElectionModelC l k lk
+            , FSI.RecVec (DP.CESByR lk)
+            , FC.ElemsOf (DP.CESByR lk) [DP.Registered2p, DP.VotesInRace]
             )
          => Either Text Text
          -> Text
