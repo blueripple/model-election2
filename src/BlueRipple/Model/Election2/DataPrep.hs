@@ -75,6 +75,7 @@ import Prelude hiding (pred)
 --import qualified Control.MapReduce as FMR
 
 FS.declareColumn "SurveyWeight" ''Double
+
 FS.declareColumn "Surveyed" ''Int
 FS.declareColumn "Registered" ''Int
 FS.declareColumn "Registered2p" ''Int
@@ -106,6 +107,7 @@ FS.declareColumn "HouseVotes" ''Int
 FS.declareColumn "HouseDVotes" ''Int
 FS.declareColumn "HouseRVotes" ''Int
 
+FS.declareColumn "TargetPop" ''Int -- number of people surveyed
 FS.declareColumn "ActionTarget" ''Double --fraction of all surveyed people who acted (registered or voted)
 FS.declareColumn "PrefDTarget" ''Double -- fraction, among people who acted,  with D preference
 
@@ -541,25 +543,27 @@ cachedPreppedCES2 cacheE ces_C = do
 
 -- an example for presidential 2020 vote.
 cesCountedDemPresVotesByCD ∷ (K.KnitEffects r, BRCC.CacheEffects r)
-                       ⇒ Bool
-                       -> WeightingStyle
-                       → K.Sem r (K.ActionWithCacheTime r (F.FrameRec (CDKeyR V.++ DCatsR V.++ CountDataR V.++ PrefDataR)))
-cesCountedDemPresVotesByCD clearCaches weightingStyle = do
+                           ⇒ Bool
+                           -> VoterValidation
+                           -> WeightingStyle
+                           → K.Sem r (K.ActionWithCacheTime r (F.FrameRec (CDKeyR V.++ DCatsR V.++ CountDataR V.++ PrefDataR)))
+cesCountedDemPresVotesByCD clearCaches vv weightingStyle = do
   ces2020_C ← CCES.ces20Loader
-  let cacheKey = "model/election2/ces20ByCD_" <> weightingStyleText weightingStyle <> ".bin"
+  let cacheKey = "model/election2/ces20ByCD_" <> weightingStyleText weightingStyle <> vvTextSuffix vv <> ".bin"
   when clearCaches $ BRCC.clearIfPresentD cacheKey
-  BRCC.retrieveOrMakeFrame cacheKey ces2020_C $ \ces → cesMR @CDKeyR weightingStyle 2020 (F.rgetField @CCES.MPresVoteParty) ces
+  BRCC.retrieveOrMakeFrame cacheKey ces2020_C $ \ces → cesMR @CDKeyR vv weightingStyle 2020 (F.rgetField @CCES.MPresVoteParty) ces
 
 
 cesCountedDemPresVotesByState ∷ (K.KnitEffects r, BRCC.CacheEffects r)
                               ⇒ Bool
+                              -> VoterValidation
                               -> WeightingStyle
                               → K.Sem r (K.ActionWithCacheTime r (F.FrameRec (StateKeyR V.++ DCatsR V.++ CountDataR V.++ PrefDataR)))
-cesCountedDemPresVotesByState clearCaches weightingStyle = do
+cesCountedDemPresVotesByState clearCaches vv weightingStyle = do
   ces2020_C ← CCES.ces20Loader
-  let cacheKey = "model/election2/ces20ByState_" <>  weightingStyleText weightingStyle <> ".bin"
+  let cacheKey = "model/election2/ces20ByState_" <>  weightingStyleText weightingStyle <> vvTextSuffix vv <> ".bin"
   when clearCaches $ BRCC.clearIfPresentD cacheKey
-  BRCC.retrieveOrMakeFrame cacheKey ces2020_C $ \ces → cesMR @StateKeyR weightingStyle 2020 (F.rgetField @CCES.MPresVoteParty) ces
+  BRCC.retrieveOrMakeFrame cacheKey ces2020_C $ \ces → cesMR @StateKeyR vv weightingStyle 2020 (F.rgetField @CCES.MPresVoteParty) ces
 
 
 data WeightingStyle = FullWeights | DesignEffectWeights deriving (Show, Eq)
@@ -677,6 +681,16 @@ cesAddEducation4 r =
   let e4 = DT.educationToEducation4 $ F.rgetField @DT.EducationC r
   in e4 F.&: r
 
+data VoterValidation = VVOnly | AllSurveyed deriving stock (Show, Eq)
+
+vvText :: VoterValidation -> Text
+vvText VVOnly = "vv"
+vvText AllSurveyed = ""
+
+vvTextSuffix :: VoterValidation -> Text
+vvTextSuffix VVOnly = "_vv"
+vvTextSuffix AllSurveyed = ""
+
 -- using each year's common content
 cesMR ∷ forall lk rs f m .
         (Foldable f, Functor f, Monad m
@@ -688,13 +702,19 @@ cesMR ∷ forall lk rs f m .
         , (lk V.++ DCatsR) F.⊆ (DT.Education4C ': rs)
         , FI.RecVec (((lk V.++ DCatsR) V.++ CountDataR) V.++ PrefDataR)
         )
-      ⇒ WeightingStyle -> Int → (F.Record rs -> MT.MaybeData ET.PartyT) -> f (F.Record rs) → m (F.FrameRec (lk V.++ DCatsR V.++ CountDataR V.++ PrefDataR))
-cesMR weightingStyle earliestYear votePartyMD =
+      ⇒ VoterValidation -> WeightingStyle
+      -> Int → (F.Record rs -> MT.MaybeData ET.PartyT) -> f (F.Record rs) → m (F.FrameRec (lk V.++ DCatsR V.++ CountDataR V.++ PrefDataR))
+cesMR vv weightingStyle earliestYear votePartyMD =
   BRF.frameCompactMR
-  (FMR.unpackFilterOnField @BR.Year (>= earliestYear))
+  unpack
+--  (FMR.unpackFilterOnField @BR.Year (>= earliestYear))
   (FMR.assignKeysAndData @(lk V.++ DCatsR) @rs)
   (countCESVotesF weightingStyle votePartyMD)
   . fmap (cesAddEducation4 . cesRecodeHispanic)
+  where
+    unpack = case vv of
+      VVOnly -> FMR.unpackFilterRow (\r -> r ^. BR.year >= earliestYear && r ^. CCES.vRegistrationC /= CCES.VR_Missing)
+      AllSurveyed -> FMR.unpackFilterOnField @BR.Year (>= earliestYear)
 
 -- vote targets
 data DRAOverride =
@@ -734,7 +754,7 @@ dShareTargetText (ElexTargetConfig n _ year _) = n <> show year
 dShareTarget :: (K.KnitEffects r, BRCC.CacheEffects r)
             => Either Text Text
             -> DShareTargetConfig r
-            -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec [GT.StateAbbreviation, ET.DemShare]))
+            -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec [GT.StateAbbreviation, TargetPop, ET.DemShare]))
 dShareTarget cacheDirE dvt@(ElexTargetConfig _ overrides_C year elex_C) = do
   cacheKey <- BRCC.cacheFromDirE cacheDirE $ dShareTargetText dvt <> ".bin"
   let overrideKey = view GT.stateAbbreviation
@@ -747,8 +767,8 @@ dShareTarget cacheDirE dvt@(ElexTargetConfig _ overrides_C year elex_C) = do
         let overrideMap = FL.fold (FL.premap overridePremap FL.map) overrides
             process r = let sa = r ^. GT.stateAbbreviation
                         in case M.lookup sa overrideMap of
-                             Nothing -> sa F.&: safeDivInt (r ^. dVotes) (r ^. tVotes) F.&: V.RNil
-                             Just x -> sa F.&: x F.&: V.RNil
+                             Nothing -> sa F.&: r ^. tVotes F.&: safeDivInt (r ^. dVotes) (r ^. tVotes) F.&: V.RNil
+                             Just x -> sa F.&: (r ^. tVotes) F.&: x F.&: V.RNil
         pure $ fmap process flattenedElex
   BRCC.retrieveOrMakeFrame cacheKey deps f
 

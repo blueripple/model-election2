@@ -81,6 +81,7 @@ FTH.declareColumn "PSDenom" ''Double
 FTH.declareColumn "ModelCI" ''MT.ConfidenceInterval
 FTH.declareColumn "ModelA" ''Double
 FTH.declareColumn "ModelP" ''Double
+FTH.declareColumn "WgtdX" ''Double
 
 data CacheStructure a b =
   CacheStructure
@@ -114,8 +115,8 @@ cachedPreppedModelData cacheStructure = K.wrapPrefix "cachedPreppedModelData" $ 
       cpsModelCacheE = bimap (appendCacheFile "CPSModelData.bin") (appendCacheFile "CPSModelData.bin") cacheDirE'
       cesByStateModelCacheE = bimap (appendCacheFile "CESModelData.bin") (appendCacheFile "CESByStateModelData.bin") cacheDirE'
       cesByCDModelCacheE = bimap (appendCacheFile "CESModelData.bin") (appendCacheFile "CESByCDModelData.bin") cacheDirE'
-  rawCESByCD_C <- DP.cesCountedDemPresVotesByCD False DP.DesignEffectWeights
-  rawCESByState_C <- DP.cesCountedDemPresVotesByState False DP.DesignEffectWeights
+  rawCESByCD_C <- DP.cesCountedDemPresVotesByCD False DP.VVOnly DP.DesignEffectWeights
+  rawCESByState_C <- DP.cesCountedDemPresVotesByState False DP.VVOnly DP.DesignEffectWeights
   rawCPS_C <- DP.cpsCountedTurnoutByState
   DP.cachedPreppedModelDataCD cpsModelCacheE rawCPS_C cesByStateModelCacheE rawCESByState_C cesByCDModelCacheE rawCESByCD_C
 
@@ -286,7 +287,7 @@ scenarioCacheText (SimpleScenario t _) = t
 type TotalReg = "TotalReg" F.:-> Int
 
 stateActionTargets ::  (K.KnitEffects r, BRCC.CacheEffects r)
-                   => Int -> MC.ModelCategory -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec [GT.StateAbbreviation, DP.ActionTarget]))
+                   => Int -> MC.ModelCategory -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec [GT.StateAbbreviation, DP.TargetPop, DP.ActionTarget]))
 stateActionTargets year cat = do
   let stFilter y r = r ^. BRDF.year == y && r ^. GT.stateAbbreviation /= "US"
   stateTurnout_C <- BRDF.stateTurnoutLoader
@@ -312,10 +313,11 @@ stateActionTargets year cat = do
         when (not $ null missing) $ K.knitError $ "stateActionTargets: missing keys in totalRegByState/stateTurnoutData: " <> show missing
         let f r = let vep = realToFrac (F.rgetField @BRDF.VEP r)
                   in if vep > 0 then realToFrac (F.rgetField @TotalReg r) / vep else 0
-            g r = FT.recordSingleton @DP.ActionTarget $ f r
-        pure $ fmap (F.rcast . FT.mutate g) joined
+            g :: (FC.ElemsOf rs [GT.StateAbbreviation, BRDF.VEP, TotalReg]) => F.Record rs  -> F.Record [GT.StateAbbreviation, DP.TargetPop, DP.ActionTarget]
+            g r = r ^. GT.stateAbbreviation F.&: r ^. BRDF.vEP F.&: f r F.&: V.RNil --FT.recordSingleton @DP.ActionTarget $ f r
+        pure $ fmap g joined --fmap (F.rcast . FT.mutate g) joined
     MC.Vote -> pure
-               $ fmap (F.rcast . FT.replaceColumn @BRDF.BallotsCountedVEP @DP.ActionTarget id)
+               $ fmap (F.rcast . FT.replaceColumn @BRDF.BallotsCountedVEP @DP.ActionTarget id . FT.replaceColumn @BRDF.VEP @DP.TargetPop id)
                <$> fmap (F.filterFrame $ stFilter year) stateTurnout_C
 
 runActionModelCPAH :: forall ks r a b .
@@ -427,7 +429,9 @@ catFromPrefTargets RegDTargets = MC.Reg
 catFromPrefTargets (VoteDTargets _) = MC.Vote
 
 statePrefDTargets :: (K.KnitEffects r, BRCC.CacheEffects r)
-                  => PrefDTargetCategory r -> CacheStructure Text Text -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec [GT.StateAbbreviation, DP.PrefDTarget]))
+                  => PrefDTargetCategory r
+                  -> CacheStructure Text Text
+                  -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec [GT.StateAbbreviation, DP.TargetPop, DP.PrefDTarget]))
 statePrefDTargets cat cacheStructure = case cat of
   RegDTargets -> do
     let statePIDCacheKey = "data/statePID2022.bin"
@@ -444,7 +448,13 @@ statePrefDTargets cat cacheStructure = case cat of
                     (FMR.assignKeysAndData @'[GT.StateAbbreviation])
                     (FMR.foldAndAddKey innerFold)
     cesData_C <- CES.ces22Loader
-    BRCC.retrieveOrMakeFrame statePIDCacheKey cesData_C $ pure . FL.fold outerFold
+    stateTurnout_C <- BRDF.stateTurnoutLoader
+    let deps = (,) <$> cesData_C <*> stateTurnout_C
+    BRCC.retrieveOrMakeFrame statePIDCacheKey deps $ \(ces, stateTurnout) -> do
+      let regTargets = FL.fold outerFold ces
+          (joined, missing) = FJ.leftJoinWithMissing @'[GT.StateAbbreviation] regTargets stateTurnout
+      when (not $ null missing) $ K.knitError $ "statePrefDTargets: missing keys in reg/turnout join: k=" <> show missing
+      pure $ fmap (F.rcast . FT.replaceColumn @BRDF.VEP @DP.TargetPop id) joined
   VoteDTargets dShareTargetConfig -> do
     dVoteTargets_C <- DP.dShareTarget (csProjectCacheDirE cacheStructure) dShareTargetConfig
     pure $ fmap (F.rcast . FT.replaceColumn @ET.DemShare @DP.PrefDTarget id) <$> dVoteTargets_C
@@ -727,8 +737,8 @@ allModelsCompChart :: forall ks r b pbase . (K.KnitOne r, BRCC.CacheEffects r, P
                    -> K.Sem r ()
 allModelsCompChart jsonLocations surveyDataBy runModel catLabel modelType catText aggs' alphaModels' = do
   allModels <- allModelsCompBy @ks runModel catLabel aggs' alphaModels'
-  cesSurveyPW <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False DP.FullWeights
-  cesSurveyDEW <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False DP.DesignEffectWeights
+  cesSurveyPW <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False DP.VVOnly DP.FullWeights
+  cesSurveyDEW <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False DP.VVOnly DP.DesignEffectWeights
   let cesCompUW = surveyDataBy (Just $ MC.UnweightedAggregation) cesSurveyPW
       cesCompW = surveyDataBy  Nothing cesSurveyPW
       cesCompPW = surveyDataBy  (Just $ MC.RoundedWeightedAggregation) cesSurveyPW
@@ -951,6 +961,30 @@ prefDataBy saM = FL.fold fld
           (FMR.assignKeysAndData @ks @(DP.CountDataR V.++ DP.PrefDataR))
           (FMR.foldAndAddKey innerFld)
 
+weightedSurveyData :: forall ks rs .
+                      (
+                        FSI.RecVec (ks V.++ '[WgtdX])
+                      , Ord (F.Record ks)
+                      , ks F.⊆ rs
+                      , rs F.⊆ rs
+                      )
+                   => (F.Record rs -> Double)
+                   -> (F.Record rs -> Double)
+                   -> F.FrameRec rs
+                   -> F.FrameRec (ks V.++ '[WgtdX])
+weightedSurveyData wgt qty  = FL.fold fld
+  where
+    sumWgtF = FL.premap wgt FL.sum
+    g r = wgt r * qty r
+    wgtdSumF = FL.premap g FL.sum
+    safeDiv x y = if y /= 0 then x / y else 0
+    innerFld = fmap (FT.recordSingleton @WgtdX) . safeDiv <$> wgtdSumF <*> sumWgtF
+    fld = FMR.concatFold
+          $ FMR.mapReduceFold
+          FMR.noUnpack
+          (FMR.assignKeysAndData @ks @rs)
+          (FMR.foldAndAddKey innerFld)
+
 surveyPSData :: forall ks rs . ((ks V.++ DP.DCatsR) F.⊆ rs
                                , rs F.⊆ rs
                                , DP.PSDataR ks F.⊆ (ks V.++ DP.DCatsR V.++ [DT.PopCount, DT.PWPopPerSqMile])
@@ -959,18 +993,75 @@ surveyPSData :: forall ks rs . ((ks V.++ DP.DCatsR) F.⊆ rs
                                )
              => (F.Record rs -> Double)
              -> (F.Record rs -> Double)
+             -> (F.Record rs -> Double)
              -> F.FrameRec rs
              -> DP.PSData ks
-surveyPSData wgt dens = DP.PSData . fmap F.rcast . FL.fold fld
+surveyPSData wgt ppl dens = DP.PSData . fmap F.rcast . FL.fold fld
   where
     toRec :: (Double, Double) -> F.Record [DT.PopCount, DT.PWPopPerSqMile]
     toRec (w, d) = round w F.&: d F.&: V.RNil
-    innerFld = fmap toRec $ DT.densityAndPopFld' DT.Geometric (const 1) wgt dens
+    innerFld = fmap toRec $ DT.densityAndPopFld'' DT.Geometric (const 1) wgt ppl dens
     fld = FMR.concatFold
           $ FMR.mapReduceFold
           FMR.noUnpack
           (FMR.assignKeysAndData @(ks V.++ DP.DCatsR) @rs)
           (FMR.foldAndAddKey innerFld)
+
+
+type PSMapProductC ks = ((ks V.++ DP.DCatsR) F.⊆ DP.PSDataR ks
+                        , V.ReifyConstraint Show F.ElField (ks V.++ DP.DCatsR)
+                        , V.RecordToList (ks V.++ DP.DCatsR)
+                        , Ord (F.Record (ks V.++ DP.DCatsR))
+                        , FC.ElemsOf (DP.PSDataR ks) '[DT.PopCount]
+                        , FSI.RecVec (DP.PSDataR ks)
+                        , V.RMap (ks V.++ DP.DCatsR)
+                        )
+
+psMapProduct :: forall ks a r . (K.KnitEffects r, PSMapProductC ks)
+                => (a -> Int -> Int) -> DP.PSData ks -> Map (F.Record (ks V.++ DP.DCatsR)) a ->  K.Sem r (DP.PSData ks)
+psMapProduct merge (DP.PSData psF)  m = do
+  let mergeRow r = do
+        let k = F.rcast @(ks V.++ DP.DCatsR) r
+        a <- K.knitMaybe ("psMapProduct: lookup failed for k=" <> show k) $ M.lookup k m
+        pure $ over DT.popCount (merge a) r
+  DP.PSData . F.toFrame <$> traverse mergeRow (FL.fold FL.list psF)
+
+
+psProduct :: forall ks rs r . (PSMapProductC ks, K.KnitEffects r)
+          => (F.Record rs -> F.Record (ks V.++ DP.DCatsR)) -> (F.Record rs -> Double) -> DP.PSData ks -> F.FrameRec rs -> K.Sem r (DP.PSData ks)
+psProduct getKey getFrac psD fs = do
+  let fMap = FL.fold (FL.premap (\r -> (getKey r, getFrac r)) FL.map) fs
+      merge f pop = round $ f * realToFrac pop
+  psMapProduct merge psD fMap
+
+addActionTargets :: (K.KnitEffects r, BRCC.CacheEffects r
+                    , FJ.CanLeftJoinM '[GT.StateAbbreviation] rs [GT.StateAbbreviation, DP.TargetPop, DP.ActionTarget]
+                    , F.ElemOf (rs V.++ (F.RDelete GT.StateAbbreviation [GT.StateAbbreviation, DP.TargetPop, DP.ActionTarget])) GT.StateAbbreviation
+                    , rs V.++ '[DP.TargetPop, DP.ActionTarget] F.⊆ (rs V.++ (F.RDelete GT.StateAbbreviation [GT.StateAbbreviation, DP.TargetPop, DP.ActionTarget]))
+                    )
+                 => F.FrameRec [GT.StateAbbreviation, DP.TargetPop, DP.ActionTarget]
+                 -> F.FrameRec rs ->  K.Sem r (F.FrameRec (rs V.++ '[DP.TargetPop, DP.ActionTarget]))
+addActionTargets tgts fr = do
+  let (joined, missing) = FJ.leftJoinWithMissing @'[GT.StateAbbreviation] fr tgts
+  when (not $ null missing) $ K.logLE K.Warning $ "addActionTargets: missing keys in state turnout target join: " <> show missing
+  pure $ fmap F.rcast joined
+
+addPrefTargets :: (K.KnitEffects r, BRCC.CacheEffects r
+                    , FJ.CanLeftJoinM '[GT.StateAbbreviation] rs [GT.StateAbbreviation, DP.TargetPop, DP.PrefDTarget]
+                    , F.ElemOf (rs V.++ (F.RDelete GT.StateAbbreviation [GT.StateAbbreviation, DP.TargetPop, DP.PrefDTarget])) GT.StateAbbreviation
+                    , rs V.++ '[DP.TargetPop, DP.ActionTarget] F.⊆ (F.RDelete DP.PrefDTarget (rs V.++ [DP.TargetPop, DP.PrefDTarget]) V.++ '[DP.ActionTarget])
+                    ,  (F.RDelete DP.PrefDTarget (rs V.++ [DP.TargetPop, DP.PrefDTarget]) V.++ '[DP.ActionTarget])  F.⊆
+                      ((rs V.++ [DP.TargetPop, DP.PrefDTarget]) V.++ '[DP.ActionTarget])
+                    , FC.ElemsOf (rs V.++ [DP.TargetPop, DP.PrefDTarget]) '[DP.PrefDTarget]
+                    )
+                 => F.FrameRec [GT.StateAbbreviation, DP.TargetPop, DP.PrefDTarget]
+                 -> F.FrameRec rs ->  K.Sem r (F.FrameRec (rs V.++ '[DP.TargetPop, DP.ActionTarget]))
+addPrefTargets tgts fr = do
+  let (joined, missing) = FJ.leftJoinWithMissing @'[GT.StateAbbreviation] fr tgts
+  when (not $ null missing) $ K.logLE K.Warning $ "addPrefTargets: missing keys in state turnout target join: " <> show missing
+  pure $ fmap (F.rcast . FT.replaceColumn @DP.PrefDTarget @DP.ActionTarget id) joined
+
+
 
 addBallotsCountedVAP :: (K.KnitEffects r, BRCC.CacheEffects r
                         , FJ.CanLeftJoinM '[GT.StateAbbreviation] rs BRDF.StateTurnoutCols
@@ -981,7 +1072,7 @@ addBallotsCountedVAP :: (K.KnitEffects r, BRCC.CacheEffects r
 addBallotsCountedVAP fr = do
   turnoutByState <- F.filterFrame ((== 2020) . view BRDF.year) <$> K.ignoreCacheTimeM BRDF.stateTurnoutLoader
   let (joined, missing) = FJ.leftJoinWithMissing @'[GT.StateAbbreviation] fr turnoutByState
-  when (not $ null missing) $ K.knitError $ "addBallotysCOuntedVAP: missing keys in state turnout target join: " <> show missing
+  when (not $ null missing) $ K.logLE K.Warning $ "addBallotsCOuntedVAP: missing keys in state turnout target join: " <> show missing
   pure $ fmap F.rcast joined
 
 addBallotsCountedVEP :: (K.KnitEffects r, BRCC.CacheEffects r
