@@ -125,7 +125,8 @@ data ActionConfig a b =
 data PrefConfig b =
   PrefConfig
   {
-    pcModelConfig :: ModelConfig b
+    pcSurveyPortion :: DP.SurveyPortion -- we know it's CES but not what portion
+  , pcModelConfig :: ModelConfig b
   }
 {-
 -- types to terms
@@ -215,7 +216,7 @@ tDesignMatrixRow_d = DM.DesignMatrixRow "d" [dRP]
 data ModelType = ActionMT | PreferenceMT | FullMT deriving stock (Eq, Ord, Show)
 
 data ActionSurvey a where
-  CESSurvey :: ActionSurvey (F.Record DP.CESByCDR)
+  CESSurvey :: DP.SurveyPortion -> ActionSurvey (F.Record DP.CESByCDR)
   CPSSurvey :: ActionSurvey (F.Record DP.CPSByStateR)
 
 data RealCountModel = ContinuousBinomial | BetaProportion deriving stock (Eq)
@@ -230,7 +231,7 @@ data SurveyAggregation b where
   WeightedAggregation :: RealCountModel -> SurveyAggregation TE.ECVec
 
 actionSurveyText :: ActionSurvey a -> Text
-actionSurveyText CESSurvey = "CES"
+actionSurveyText (CESSurvey sp) = "CES_" <> DP.surveyPortionText sp
 actionSurveyText CPSSurvey = "CPS"
 
 data PSTargets = NoPSTargets | PSTargets deriving stock (Eq, Ord, Show)

@@ -106,7 +106,7 @@ usesCES :: Config a b -> Bool
 usesCES c = case actionSurvey c of
   Nothing -> True
   Just as -> case as of
-    MC.CESSurvey -> True
+    MC.CESSurvey _ -> True
     _ -> False
 
 usesCESPref :: Config a b -> Bool
@@ -118,10 +118,10 @@ configText :: forall a b. Config a b -> Text
 configText (ActionOnly c (MC.ActionConfig as mc)) = case c of
   MC.Reg -> "Reg" <> MC.actionSurveyText as <> "_" <> MC.modelConfigText mc
   MC.Vote -> "Turnout" <> MC.actionSurveyText as <> "_" <> MC.modelConfigText mc
-configText (PrefOnly c (MC.PrefConfig mc)) = case c of
-  MC.Reg -> "RegPref" <> "_" <> MC.modelConfigText mc
-  MC.Vote -> "Pref" <> "_" <> MC.modelConfigText mc
-configText (ActionAndPref c (MC.ActionConfig as tMC) (MC.PrefConfig pMC)) = case c of
+configText (PrefOnly c (MC.PrefConfig sp mc)) = case c of
+  MC.Reg -> "RegPref" <> "_" <> DP.surveyPortionText sp <> "_" <> MC.modelConfigText mc
+  MC.Vote -> "Pref" <> "_" <> DP.surveyPortionText sp <> "_" <> MC.modelConfigText mc
+configText (ActionAndPref c (MC.ActionConfig as tMC) (MC.PrefConfig sp pMC)) = case c of
   MC.Reg -> "RegBoth" <> MC.actionSurveyText as
              <> "_" <> MC.modelConfigText tMC
              <> "_" <> MC.modelConfigText pMC
@@ -194,14 +194,14 @@ actionModelData c (MC.ActionConfig ts mc) = do
       MC.UnweightedAggregation -> fmap MC.ModelData $ cpsSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc uwSurveyed uwAction
       MC.RoundedWeightedAggregation -> fmap MC.ModelData $ cpsSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc rwSurveyed rwAction
       MC.WeightedAggregation _  -> fmap MC.ModelData $ cpsSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc wSurveyed wAction
-    MC.CESSurvey -> case mc.mcSurveyAggregation of
+    MC.CESSurvey _ -> case mc.mcSurveyAggregation of
       MC.UnweightedAggregation -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc uwSurveyed uwAction
       MC.RoundedWeightedAggregation -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc rwSurveyed rwAction
       MC.WeightedAggregation _  -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc wSurveyed wAction
 
 prefModelData :: forall b gq lk . MC.ModelCategory -> MC.PrefConfig b
               -> SMB.StanBuilderM (DP.ModelData lk) gq (MC.ModelData (F.Record DP.CESByCDR) b)
-prefModelData c (MC.PrefConfig mc) = do
+prefModelData c (MC.PrefConfig _x mc) = do
   let cesSurveyDataTag = SMB.dataSetTag @(F.Record DP.CESByCDR) SC.ModelData "CESP"
       uwAction :: forall rs md. (FC.ElemsOf rs [DP.VotesInRace, DP.Registered2p]) => SMB.RowTypeTag (F.Record rs) -> SMB.StanBuilderM md gq TE.IntArrayE
       uwAction rtt = case c of
@@ -243,6 +243,10 @@ setupAlphaSum prefixM states alphas = do
       prefixed t = maybe t (<> "_" <> t) prefixM
       alphaNDS n t = TE.NamedDeclSpec (prefixed "a" <> t) $ TE.vectorSpec n []
       stdNormalBP nds =  DAG.UntransformedP nds [] TNil (\TNil m -> TE.addStmt $ TE.sample m SF.std_normal TNil)
+      normalBP :: forall et . (TE.TypeOneOf et [TE.EReal, TE.ECVec, TE.ERVec], TE.GenSType et) => Double -> Double -> TE.NamedDeclSpec et -> DAG.BuildParameter et
+      normalBP mean sd nds =  DAG.UntransformedP nds [] TNil (\TNil m -> TE.addStmt $ TE.sample m SF.normalS (TE.realE mean :> TE.realE sd :> TNil))
+      defPrior :: forall et . (TE.TypeOneOf et [TE.EReal, TE.ECVec, TE.ERVec], TE.GenSType et) => TE.NamedDeclSpec et -> DAG.BuildParameter et
+      defPrior = normalBP 0 2
       enumI :: Enum e => e -> Either Text Int
       enumI e = Right $ fromEnum e + 1
       enumS :: forall e . (Enum e, Bounded e) => Int
@@ -251,19 +255,19 @@ setupAlphaSum prefixM states alphas = do
       stateI s = maybe (Left $ "setupAlphaSum: " <> s <> " is missing from given list of states") Right $ M.lookup s stateIndexMap
 --      stateS = M.size stateIndexMap
       ageAG :: SG.GroupAlpha (F.Record GroupR) TE.ECVec = SG.contramapGroupAlpha (view DT.age5C)
-              $ SG.firstOrderAlphaDC MC.ageG enumI DT.A5_45To64 (stdNormalBP $ alphaNDS (SMB.groupSizeE MC.ageG `TE.minusE` TE.intE 1) "Age")
+              $ SG.firstOrderAlphaDC MC.ageG enumI DT.A5_45To64 (defPrior $ alphaNDS (SMB.groupSizeE MC.ageG `TE.minusE` TE.intE 1) "Age")
       sexAG  :: SG.GroupAlpha (F.Record GroupR) TE.EReal = SG.contramapGroupAlpha (view DT.sexC)
-              $ SG.binaryAlpha prefixM MC.sexG ((\x -> realToFrac x - 0.5) . fromEnum) (stdNormalBP $ TE.NamedDeclSpec (prefixed "aSex") $ TE.realSpec [])
+              $ SG.binaryAlpha prefixM MC.sexG ((\x -> realToFrac x - 0.5) . fromEnum) (defPrior $ TE.NamedDeclSpec (prefixed "aSex") $ TE.realSpec [])
       eduAG  :: SG.GroupAlpha (F.Record GroupR) TE.ECVec = SG.contramapGroupAlpha (view DT.education4C)
-              $ SG.firstOrderAlphaDC MC.eduG enumI DT.E4_HSGrad (stdNormalBP $ alphaNDS (SMB.groupSizeE MC.eduG `TE.minusE` TE.intE 1) "Edu")
+              $ SG.firstOrderAlphaDC MC.eduG enumI DT.E4_HSGrad (defPrior $ alphaNDS (SMB.groupSizeE MC.eduG `TE.minusE` TE.intE 1) "Edu")
       raceAG  :: SG.GroupAlpha (F.Record GroupR) TE.ECVec = SG.contramapGroupAlpha (view DT.race5C)
-               $ SG.firstOrderAlphaDC MC.raceG enumI DT.R5_WhiteNonHispanic (stdNormalBP $ alphaNDS (SMB.groupSizeE MC.raceG `TE.minusE` TE.intE 1) "Race")
+               $ SG.firstOrderAlphaDC MC.raceG enumI DT.R5_WhiteNonHispanic (defPrior $ alphaNDS (SMB.groupSizeE MC.raceG `TE.minusE` TE.intE 1) "Race")
       refAge = DT.A5_45To64
       refEducation = DT.E4_HSGrad
       refRace = DT.R5_WhiteNonHispanic
   let zeroAG_C = do
         let nds = TE.NamedDeclSpec (prefixed "alpha0") $ TE.realSpec []
-        pure $ SG.contramapGroupAlpha (view GT.stateAbbreviation) $ SG.zeroOrderAlpha $ stdNormalBP nds
+        pure $ SG.contramapGroupAlpha (view GT.stateAbbreviation) $ SG.zeroOrderAlpha $ normalBP 1.2 1 nds
   let stateAG_C = do
         muAlphaP <- DAG.simpleParameterWA
                     (TE.NamedDeclSpec (prefixed "muSt") $ TE.realSpec [])
@@ -701,7 +705,7 @@ model rc c states = case c of
         psRowTag <- SMB.dataSetTag @(F.Record (DP.PSDataR k)) SC.GQData "PSData"
         postStratifyOne psRowTag (view DT.popCount) F.rcast actionLabel paramSetup Nothing Nothing mc.mcDesignMatrixRow (Just $ centerF SC.GQData) Nothing gtt >> pure ()
 
-  PrefOnly cat prefConfig@(MC.PrefConfig mc) -> do
+  PrefOnly cat prefConfig@(MC.PrefConfig _ mc) -> do
     mData <- prefModelData cat prefConfig
     paramSetup <- setupParameters Nothing states mc
     (Components modelM llM ppM centerF) <- components Nothing (MC.covariatesAndCounts mData) paramSetup mc.mcSurveyAggregation
@@ -717,7 +721,7 @@ model rc c states = case c of
         psRowTag <- SMB.dataSetTag @(F.Record (DP.PSDataR k)) SC.GQData "PSData"
         postStratifyOne psRowTag (view DT.popCount) F.rcast prefLabel paramSetup Nothing Nothing mc.mcDesignMatrixRow (Just $ centerF SC.GQData) Nothing gtt >> pure ()
 
-  ActionAndPref cat aConfig@(MC.ActionConfig _ aMC) pConfig@(MC.PrefConfig pMC) -> do
+  ActionAndPref cat aConfig@(MC.ActionConfig _ aMC) pConfig@(MC.PrefConfig _ pMC) -> do
     let (actionLabel, prefLabel, psLabel) = case cat of
                                      MC.Reg -> ("R", "PR", "RDVS") -- Registration
                                      MC.Vote -> ("T", "P", "DVS") -- Votes
@@ -804,7 +808,7 @@ runModel modelDirE modelName gqName runConfig config modelData_C psData_C = do
         ActionOnly _ (MC.ActionConfig _ mc) -> case mc.mcSurveyAggregation of
           MC.WeightedAggregation MC.BetaProportion -> [SR.UnwrapExpr (aNum <> " / " <> aDenom) ("y" <> aFieldName <> "Rate_" <> rSuffix)]
           _ -> [SR.UnwrapNamed aFieldName ("y" <> aFieldName <> "_" <> rSuffix)]
-        PrefOnly _ (MC.PrefConfig mc) -> case mc.mcSurveyAggregation of
+        PrefOnly _ (MC.PrefConfig _ mc) -> case mc.mcSurveyAggregation of
           MC.WeightedAggregation MC.BetaProportion -> [SR.UnwrapExpr (pNum <> " / " <> pDenom) ("y" <> pFieldName <> "Rate_" <> rSuffix)]
           _ -> [SR.UnwrapNamed pFieldName ("y" <> pFieldName <> "_" <> rSuffix)]
         ActionAndPref _ _ _  -> [] -- what is a PP check for this combo case??
@@ -856,12 +860,12 @@ deriving anyclass instance Flat.Flat ModelParameters
 
 actionSurveyA :: Config a b -> Maybe (MC.ActionSurvey a)
 actionSurveyA (ActionOnly _ (MC.ActionConfig ts _)) = Just ts
-actionSurveyA (PrefOnly _ _) = Just MC.CESSurvey
+actionSurveyA (PrefOnly _ (MC.PrefConfig sp _)) = Just $ MC.CESSurvey sp
 actionSurveyA (ActionAndPref _ (MC.ActionConfig _ _) _) = Nothing
 
 dmrA :: Config a b -> Maybe (DM.DesignMatrixRow (F.Record DP.LPredictorsR))
 dmrA (ActionOnly _ (MC.ActionConfig _ (MC.ModelConfig _ _ dmr))) = Just dmr
-dmrA (PrefOnly _ (MC.PrefConfig (MC.ModelConfig _ _ dmr))) = Just dmr
+dmrA (PrefOnly _ (MC.PrefConfig _ (MC.ModelConfig _ _ dmr))) = Just dmr
 dmrA (ActionAndPref _ _ _) = Nothing
 
 --NB: parsed summary data has stan indexing, i.e., Arrays start at 1.
@@ -889,7 +893,7 @@ modelResultAction config runConfig = SC.UseSummary f where
              $ traverse (\n -> FL.premap (List.!! n) FL.mean) [0..(nPredictors - 1)]
         mdMeansLM :: MC.ActionSurvey a -> DM.DesignMatrixRow (F.Record DP.LPredictorsR) -> [Double]
         mdMeansLM as dmr = case as of
-          MC.CESSurvey -> FL.fold (FL.premap (F.rcast @DP.LPredictorsR) $ mdMeansFld dmr) $ DP.cesData modelData
+          MC.CESSurvey _ -> FL.fold (FL.premap (F.rcast @DP.LPredictorsR) $ mdMeansFld dmr) $ DP.cesData modelData
           MC.CPSSurvey -> FL.fold (FL.premap (F.rcast @DP.LPredictorsR) $ mdMeansFld dmr) $ DP.cpsData modelData
         getVector n = K.knitEither $ SP.getVector . fmap CS.mean <$> SP.parse1D n (CS.paramStats summary)
         betaSIF :: DM.DesignMatrixRow (F.Record DP.LPredictorsR) -> [Double] -> K.Sem r (VU.Vector (Double, Double))

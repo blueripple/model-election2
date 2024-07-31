@@ -107,16 +107,21 @@ allCellCS (CacheStructure a b _ c _) = CacheStructure a b c () ()
 
 cachedPreppedModelData :: (K.KnitEffects r, BRCC.CacheEffects r)
                        => CacheStructure () ()
+                       -> MC2.Config a b
                        -> K.Sem r (K.ActionWithCacheTime r (DP.ModelData DP.CDKeyR))
-cachedPreppedModelData cacheStructure = K.wrapPrefix "cachedPreppedModelData" $ do
+cachedPreppedModelData cacheStructure config = K.wrapPrefix "cachedPreppedModelData" $ do
+  let sp = case config of
+        MC2.ActionOnly _ _ -> DP.AllSurveyed DP.Both
+        MC2.PrefOnly _ (MC.PrefConfig sp' _) -> sp'
+        MC2.ActionAndPref _ _ (MC.PrefConfig sp' _) -> sp'
   cacheDirE' <- K.knitMaybe "Empty cacheDir given!" $ BRCC.insureFinalSlashE $ csProjectCacheDirE cacheStructure
   let appendCacheFile :: Text -> Text -> Text
       appendCacheFile t d = d <> t
       cpsModelCacheE = bimap (appendCacheFile "CPSModelData.bin") (appendCacheFile "CPSModelData.bin") cacheDirE'
       cesByStateModelCacheE = bimap (appendCacheFile "CESModelData.bin") (appendCacheFile "CESByStateModelData.bin") cacheDirE'
       cesByCDModelCacheE = bimap (appendCacheFile "CESModelData.bin") (appendCacheFile "CESByCDModelData.bin") cacheDirE'
-  rawCESByCD_C <- DP.cesCountedDemPresVotesByCD False DP.VVOnly DP.DesignEffectWeights
-  rawCESByState_C <- DP.cesCountedDemPresVotesByState False DP.VVOnly DP.DesignEffectWeights
+  rawCESByCD_C <- DP.cesCountedDemPresVotesByCD False sp DP.DesignEffectWeights
+  rawCESByState_C <- DP.cesCountedDemPresVotesByState False sp DP.DesignEffectWeights
   rawCPS_C <- DP.cpsCountedTurnoutByState
   DP.cachedPreppedModelDataCD cpsModelCacheE rawCPS_C cesByStateModelCacheE rawCESByState_C cesByCDModelCacheE rawCESByCD_C
 
@@ -142,7 +147,7 @@ runBaseModel year cacheStructure config psData_C = do
         MC2.ActionAndPref cat ac _ -> case cat of
           MC.Reg -> MC.actionSurveyText ac.acSurvey <> "RF_" <> show year
           MC.Vote -> MC.actionSurveyText ac.acSurvey <> "F_" <> show year
-  modelData_C <- cachedPreppedModelData cacheStructure
+  modelData_C <- cachedPreppedModelData cacheStructure config
   MC2.runModel (csModelDirE cacheStructure) modelName
     (csPSName cacheStructure) runConfig config modelData_C psData_C
 
@@ -257,10 +262,10 @@ modelCPs :: forall r a b .
          -> MC2.Config a b
          -> K.Sem r (K.ActionWithCacheTime r (MC.PSMap StateAndCats MT.ConfidenceInterval, Maybe MC2.ModelParameters))
 modelCPs year cacheStructure config = K.wrapPrefix "modelCPs" $ do
-  modelData <- timed "Loaded model data" $ K.ignoreCacheTimeM $ cachedPreppedModelData $ modelCacheStructure cacheStructure
+  modelData <- timed "Loaded model data" $ K.ignoreCacheTimeM $ cachedPreppedModelData (modelCacheStructure cacheStructure) config
   (allStates, avgPWPopPerSqMile) <- case config of
         MC2.ActionOnly _ ac -> case ac.acSurvey of
-          MC.CESSurvey -> pure $ FL.fold ((,) <$> FL.premap (view GT.stateAbbreviation) FL.set <*> FL.premap (view DT.pWPopPerSqMile) FL.mean) modelData.cesData
+          MC.CESSurvey _ -> pure $ FL.fold ((,) <$> FL.premap (view GT.stateAbbreviation) FL.set <*> FL.premap (view DT.pWPopPerSqMile) FL.mean) modelData.cesData
           MC.CPSSurvey -> pure $ FL.fold ((,) <$> FL.premap (view GT.stateAbbreviation) FL.set <*> FL.premap (view DT.pWPopPerSqMile) FL.mean) modelData.cpsData
         MC2.PrefOnly _ _ ->  pure $ FL.fold ((,) <$> FL.premap (view GT.stateAbbreviation) FL.set <*> FL.premap (view DT.pWPopPerSqMile) FL.mean) modelData.cesData
         MC2.ActionAndPref _ _ _ -> K.knitError "modelCPs called with TurnoutAndPref config."
@@ -737,21 +742,33 @@ allModelsCompChart :: forall ks r b pbase . (K.KnitOne r, BRCC.CacheEffects r, P
                    -> K.Sem r ()
 allModelsCompChart jsonLocations surveyDataBy runModel catLabel modelType catText aggs' alphaModels' = do
   allModels <- allModelsCompBy @ks runModel catLabel aggs' alphaModels'
-  cesSurveyPW <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False DP.VVOnly DP.FullWeights
-  cesSurveyDEW <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False DP.VVOnly DP.DesignEffectWeights
+  cesSurveyPW <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.AllSurveyed DP.Both) DP.DesignEffectWeights
+  cesSurveyPWVV <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.Validated DP.Both) DP.DesignEffectWeights
+--  cesSurveyDEW <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.AllSurveyed DP.Both) DP.DesignEffectWeights
+--  cesSurveyDEWVV <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.Validated DP.Both) DP.DesignEffectWeights
   let cesCompUW = surveyDataBy (Just $ MC.UnweightedAggregation) cesSurveyPW
-      cesCompW = surveyDataBy  Nothing cesSurveyPW
+      cesCompUW_VV = surveyDataBy (Just $ MC.UnweightedAggregation) cesSurveyPWVV
+{-      cesCompW = surveyDataBy  Nothing cesSurveyPW
+      cesCompW_VV = surveyDataBy  Nothing cesSurveyPWVV
       cesCompPW = surveyDataBy  (Just $ MC.RoundedWeightedAggregation) cesSurveyPW
+      cesCompPW_VV = surveyDataBy  (Just $ MC.RoundedWeightedAggregation) cesSurveyPWVV
       cesCompRPW = surveyDataBy (Just $ MC.WeightedAggregation MC.ContinuousBinomial) cesSurveyPW
-      cesCompDW = surveyDataBy (Just $ MC.RoundedWeightedAggregation) cesSurveyDEW
-      cesCompRDW = surveyDataBy (Just $ MC.WeightedAggregation MC.ContinuousBinomial) cesSurveyDEW
+      cesCompRPW_VV = surveyDataBy (Just $ MC.WeightedAggregation MC.ContinuousBinomial) cesSurveyPWVV
+--      cesCompDW = surveyDataBy (Just $ MC.RoundedWeightedAggregation) cesSurveyDEW
+--      cesCompRDW = surveyDataBy (Just $ MC.WeightedAggregation MC.ContinuousBinomial) cesSurveyDEW
+-}
   let cats = Set.toList $ Keyed.elements @(F.Record ks)
       _numCats = length cats
       numSources = length allModels
   catCompChart <- categoryChart @ks jsonLocations (modelType <> " Comparison By Category") (modelType <> "Comp")
                   (FV.fixedSizeVC 300 (50 * realToFrac numSources) 10) (Just cats) (Just $ fmap fst allModels)
-                  catText allModels (Just [("UW Survey", cesCompUW),("RDW Survey", cesCompRDW), ("DW Survey", cesCompDW)
-                                          ,("RPW Survey", cesCompRPW), ("PW Survey", cesCompPW), ("W Survey", cesCompW)])
+                  catText allModels (Just [("UW Survey", cesCompUW),("UW VV Survey", cesCompUW_VV)
+{-                                          ,("RPW Survey", cesCompRPW), ("RPW VV Survey", cesCompRPW_VV)
+                                          , ("PW Survey", cesCompPW), ("PW VV Survey", cesCompPW_VV)
+                                          , ("W Survey", cesCompW), ("W VV Survey", cesCompW_VV)
+-}
+                                          ]
+                                    )
   _ <- K.addHvega Nothing Nothing catCompChart
   pure ()
 
