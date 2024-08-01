@@ -111,7 +111,9 @@ cachedPreppedModelData :: (K.KnitEffects r, BRCC.CacheEffects r)
                        -> K.Sem r (K.ActionWithCacheTime r (DP.ModelData DP.CDKeyR))
 cachedPreppedModelData cacheStructure config = K.wrapPrefix "cachedPreppedModelData" $ do
   let sp = case config of
-        MC2.ActionOnly _ _ -> DP.AllSurveyed DP.Both
+        MC2.ActionOnly _ (MC.ActionConfig as _) -> case as of
+          MC.CESSurvey sp' -> sp'
+          MC.CPSSurvey -> DP.AllSurveyed DP.Both -- this is unused
         MC2.PrefOnly _ (MC.PrefConfig sp' _) -> sp'
         MC2.ActionAndPref _ _ (MC.PrefConfig sp' _) -> sp'
   cacheDirE' <- K.knitMaybe "Empty cacheDir given!" $ BRCC.insureFinalSlashE $ csProjectCacheDirE cacheStructure
