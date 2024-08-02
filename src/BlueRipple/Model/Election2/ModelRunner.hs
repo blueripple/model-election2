@@ -131,6 +131,8 @@ runBaseModel ::  forall l r ks a b .
                    (K.KnitEffects r
                    , BRCC.CacheEffects r
                    , MC2.ElectionModelC l ks DP.CDKeyR
+                   , FSI.RecVec (DP.PSDataR ks)
+                   , F.ElemOf (DP.PSDataR ks) DT.PopCount
                    )
                 => Int
                 -> CacheStructure () ()
@@ -143,9 +145,9 @@ runBaseModel year cacheStructure config psData_C = do
         MC2.ActionOnly cat ac -> case cat of
           MC.Reg -> MC.actionSurveyText ac.acSurvey <> "R_" <> show year
           MC.Vote -> MC.actionSurveyText ac.acSurvey <> "T_" <> show year
-        MC2.PrefOnly cat _ -> case cat of
-          MC.Reg -> "RP_" <> show year
-          MC.Vote -> "P_" <> show year
+        MC2.PrefOnly cat (MC.PrefConfig sp _) -> case cat of
+          MC.Reg -> "RP_" <> DP.surveyPortionText sp <> "_" <> show year
+          MC.Vote -> "P_" <> DP.surveyPortionText sp <> "_" <> show year
         MC2.ActionAndPref cat ac _ -> case cat of
           MC.Reg -> MC.actionSurveyText ac.acSurvey <> "RF_" <> show year
           MC.Vote -> MC.actionSurveyText ac.acSurvey <> "F_" <> show year
@@ -941,7 +943,7 @@ regDataBy saM = FL.fold fld
           (FMR.assignKeysAndData @ks @DP.CountDataR)
           (FMR.foldAndAddKey innerFld)
 
-prefDataBy :: forall ks rs a. (DP.CountDataR V.++ DP.PrefDataR F.⊆ rs) => SurveyDataBy ks rs a
+prefDataBy :: forall ks rs a. (DP.CountDataR V.++ DP.PrefDataR F.⊆ rs, F.ElemOf rs DP.VotesInRace) => SurveyDataBy ks rs a
 prefDataBy saM = FL.fold fld
   where
     safeDiv :: Double -> Double -> Double
@@ -976,7 +978,7 @@ prefDataBy saM = FL.fold fld
     fld :: FL.Fold (F.Record rs) (F.FrameRec (ks V.++ '[ModelPr]))
     fld = FMR.concatFold
           $ FMR.mapReduceFold
-          FMR.noUnpack
+          (FMR.unpackFilterOnField @DP.VotesInRace (> 0))
           (FMR.assignKeysAndData @ks @(DP.CountDataR V.++ DP.PrefDataR))
           (FMR.foldAndAddKey innerFld)
 

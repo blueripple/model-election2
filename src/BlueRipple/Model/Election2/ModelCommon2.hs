@@ -101,10 +101,9 @@ usesCPS c = case actionSurvey c of
     MC.CPSSurvey -> True
     _ -> False
 
-
 usesCES :: Config a b -> Bool
 usesCES c = case actionSurvey c of
-  Nothing -> True
+  Nothing -> False -- here we use only the "Pref" version
   Just as -> case as of
     MC.CESSurvey _ -> True
     _ -> False
@@ -143,6 +142,8 @@ groupBuilder :: forall g k lk l a b .
                  , Typeable (DP.CESByR lk)
                  , FSI.RecVec (DP.CESByR lk)
                  , FC.ElemsOf (DP.CESByR lk) [DP.Registered2p, DP.VotesInRace]
+                 , FSI.RecVec (DP.PSDataR k)
+                 , F.ElemOf (DP.PSDataR k) DT.PopCount
                  )
                => Config a b
                -> g Text
@@ -153,7 +154,7 @@ groupBuilder config states psKeys = do
   when (usesCPS config) $ SMB.addModelDataToGroupBuilder "CPS" (SMB.ToFoldable DP.cpsData) >>= MC.addGroupIndexesAndIntMaps groups'
   when (usesCES config) $ SMB.addModelDataToGroupBuilder "CES" (SMB.ToFoldable DP.cesData) >>= MC.addGroupIndexesAndIntMaps groups'
   when (usesCESPref config) $ case configModelCategory config of
-    MC.Reg -> SMB.addModelDataToGroupBuilder "CESP" (SMB.ToFoldable DP.cesDataRegPref) >>= MC.addGroupIndexesAndIntMaps groups'
+    MC.Reg -> SMB.addModelDataToGroupBuilder "CESR" (SMB.ToFoldable DP.cesDataRegPref) >>= MC.addGroupIndexesAndIntMaps groups'
     MC.Vote -> SMB.addModelDataToGroupBuilder "CESP" (SMB.ToFoldable DP.cesDataVotePref) >>= MC.addGroupIndexesAndIntMaps groups'
   MC.psGroupBuilder states psKeys
 
@@ -774,6 +775,8 @@ runModel :: forall l k lk r a b .
             , ElectionModelC l k lk
             , FSI.RecVec (DP.CESByR lk)
             , FC.ElemsOf (DP.CESByR lk) [DP.Registered2p, DP.VotesInRace]
+            , FSI.RecVec (DP.PSDataR k)
+            , F.ElemOf (DP.PSDataR k) DT.PopCount
             )
          => Either Text Text
          -> Text

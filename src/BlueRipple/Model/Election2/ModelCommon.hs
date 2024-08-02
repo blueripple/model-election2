@@ -191,6 +191,8 @@ psGroupBuilder :: forall g k lk l .
                  , Typeable l
                  , F.ElemOf (DP.PSDataR k) GT.StateAbbreviation
                  , DP.DCatsR F.⊆ DP.PSDataR k
+                 , FSI.RecVec (DP.PSDataR k)
+                 , F.ElemOf (DP.PSDataR k) DT.PopCount
                  )
                => g Text
                -> g (F.Record l)
@@ -198,7 +200,8 @@ psGroupBuilder :: forall g k lk l .
 psGroupBuilder states psKeys = do
   let groups' = groups states
       psGtt = psGroupTag @l
-  psTag <- SMB.addGQDataToGroupBuilder "PSData" (SMB.ToFoldable DP.unPSData)
+  -- rows with 0 weight add nothing to the sums but add space to json and time to computation
+  psTag <- SMB.addGQDataToGroupBuilder "PSData" (SMB.ToFoldable $ F.filterFrame ((> 0) . view DT.popCount) . DP.unPSData)
   SMB.addGroupIndexForData psGtt psTag $ SMB.makeIndexFromFoldable show F.rcast psKeys
   SMB.addGroupIntMapForDataSet psGtt psTag $ SMB.dataToIntMapFromFoldable F.rcast psKeys
   SG.addModelIndexes psTag F.rcast groups'
