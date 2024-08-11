@@ -80,7 +80,12 @@ raceG = SMB.GroupTypeTag "Race"
 --psGroupTag :: forall k . Typeable k => SMB.GroupTypeTag (F.Record k)
 --psGroupTag = SMB.GroupTypeTag "PSGrp"
 
-data Alphas = A_S_E_R
+data Alphas = A | S | E | R
+            | A_S | A_E | S_E | S_R
+            | A_S_AS
+            | A_E_AE
+            | A_S_E_R
+            | A_S_E_R_AS_AE_AR_SE_SR_ER
             | St_A_S_E_R
             | St_A_S_E_R_ER
             | St_A_S_E_R_AR

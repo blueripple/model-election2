@@ -254,21 +254,24 @@ setupAlphaSum prefixM states alphas = do
       enumS = length [(minBound :: e)..(maxBound :: e)]
       stateIndexMap = M.fromList $ zip states [1..]
       stateI s = maybe (Left $ "setupAlphaSum: " <> s <> " is missing from given list of states") Right $ M.lookup s stateIndexMap
---      stateS = M.size stateIndexMap
-      ageAG :: SG.GroupAlpha (F.Record GroupR) TE.ECVec = SG.contramapGroupAlpha (view DT.age5C)
-              $ SG.firstOrderAlphaDC MC.ageG enumI DT.A5_45To64 (defPrior $ alphaNDS (SMB.groupSizeE MC.ageG `TE.minusE` TE.intE 1) "Age")
-      sexAG  :: SG.GroupAlpha (F.Record GroupR) TE.EReal = SG.contramapGroupAlpha (view DT.sexC)
-              $ SG.binaryAlpha prefixM MC.sexG ((\x -> realToFrac x - 0.5) . fromEnum) (defPrior $ TE.NamedDeclSpec (prefixed "aSex") $ TE.realSpec [])
-      eduAG  :: SG.GroupAlpha (F.Record GroupR) TE.ECVec = SG.contramapGroupAlpha (view DT.education4C)
-              $ SG.firstOrderAlphaDC MC.eduG enumI DT.E4_HSGrad (defPrior $ alphaNDS (SMB.groupSizeE MC.eduG `TE.minusE` TE.intE 1) "Edu")
-      raceAG  :: SG.GroupAlpha (F.Record GroupR) TE.ECVec = SG.contramapGroupAlpha (view DT.race5C)
-               $ SG.firstOrderAlphaDC MC.raceG enumI DT.R5_WhiteNonHispanic (defPrior $ alphaNDS (SMB.groupSizeE MC.raceG `TE.minusE` TE.intE 1) "Race")
+      refSex = DT.Female
       refAge = DT.A5_45To64
       refEducation = DT.E4_HSGrad
       refRace = DT.R5_WhiteNonHispanic
+--      stateS = M.size stateIndexMap
+      ageAG :: SG.GroupAlpha (F.Record GroupR) TE.ECVec = SG.contramapGroupAlpha (view DT.age5C)
+              $ SG.firstOrderAlphaDC MC.ageG enumI refAge (defPrior $ alphaNDS (SMB.groupSizeE MC.ageG `TE.minusE` TE.intE 1) "Age")
+--      sexAG  :: SG.GroupAlpha (F.Record GroupR) TE.EReal = SG.contramapGroupAlpha (view DT.sexC)
+--              $ SG.binaryAlpha prefixM MC.sexG ((\x -> realToFrac x - 0.5) . fromEnum) (defPrior $ TE.NamedDeclSpec (prefixed "aSex") $ TE.realSpec [])
+      sexAG  :: SG.GroupAlpha (F.Record GroupR) TE.ECVec = SG.contramapGroupAlpha (view DT.sexC)
+              $ SG.firstOrderAlphaDC MC.sexG enumI refSex (defPrior $ alphaNDS (SMB.groupSizeE MC.sexG `TE.minusE` TE.intE 1) "Sex")
+      eduAG  :: SG.GroupAlpha (F.Record GroupR) TE.ECVec = SG.contramapGroupAlpha (view DT.education4C)
+              $ SG.firstOrderAlphaDC MC.eduG enumI refEducation (defPrior $ alphaNDS (SMB.groupSizeE MC.eduG `TE.minusE` TE.intE 1) "Edu")
+      raceAG  :: SG.GroupAlpha (F.Record GroupR) TE.ECVec = SG.contramapGroupAlpha (view DT.race5C)
+               $ SG.firstOrderAlphaDC MC.raceG enumI refRace (defPrior $ alphaNDS (SMB.groupSizeE MC.raceG `TE.minusE` TE.intE 1) "Race")
   let zeroAG_C = do
         let nds = TE.NamedDeclSpec (prefixed "alpha0") $ TE.realSpec []
-        pure $ SG.contramapGroupAlpha (view GT.stateAbbreviation) $ SG.zeroOrderAlpha $ normalBP 1.2 1 nds
+        pure $ SG.contramapGroupAlpha (view GT.stateAbbreviation) $ SG.zeroOrderAlpha $ normalBP 0 2 nds
   let stateAG_C = do
         muAlphaP <- DAG.simpleParameterWA
                     (TE.NamedDeclSpec (prefixed "muSt") $ TE.realSpec [])
@@ -295,6 +298,40 @@ setupAlphaSum prefixM states alphas = do
                        (muAlphaP :> sigmaAlphaP :> rawP :> TNil) DAG.TransformedParametersBlock
                        (\(mu :> s :> r :> TNil) -> DAG.DeclRHS $ mu `TE.plusE` (s `TE.timesE` r))
         pure $ SG.contramapGroupAlpha (view GT.stateAbbreviation) $ SG.firstOrderAlpha MC.stateG stateI aStBP_NC
+  let ageSexAG = do
+        sigmaAgeSex <- DAG.simpleParameterWA
+                         (TE.NamedDeclSpec (prefixed "sigmaAgeSex") $ TE.realSpec [TE.lowerM $ TE.realE 0])
+                         stdNormalDWA
+        let as_NDS = alphaNDS (SMB.groupSizeE MC.sexG `TE.timesE`  SMB.groupSizeE MC.ageG `TE.minusE` TE.intE 1) "AgeSex"
+            as_BP ::  DAG.BuildParameter TE.ECVec
+            as_BP = DAG.UntransformedP
+                    as_NDS [] (sigmaAgeSex :> TNil)
+                    $ \(sigmaE :> TNil) m -> TE.addStmt $ TE.sample m SF.normalS (TE.realE 0 :> sigmaE :> TNil)
+        pure $ SG.contramapGroupAlpha (\r -> (r ^. DT.age5C, r ^. DT.sexC))
+          $ SG.secondOrderAlphaDC prefixM MC.ageG (enumI, enumS @DT.Age5) MC.sexG (enumI, enumS @DT.Sex) (refAge, refSex) as_BP
+  let sexEduAG = do
+        sigmaSexEdu <- DAG.simpleParameterWA
+                         (TE.NamedDeclSpec (prefixed "sigmaSexEdu") $ TE.realSpec [TE.lowerM $ TE.realE 0])
+                         stdNormalDWA
+        let as_NDS = alphaNDS (SMB.groupSizeE MC.sexG `TE.timesE` SMB.groupSizeE MC.eduG `TE.minusE` TE.intE 1) "SexEdu"
+            as_BP ::  DAG.BuildParameter TE.ECVec
+            as_BP = DAG.UntransformedP
+                    as_NDS [] (sigmaSexEdu :> TNil)
+                    $ \(sigmaE :> TNil) m -> TE.addStmt $ TE.sample m SF.normalS (TE.realE 0 :> sigmaE :> TNil)
+        pure $ SG.contramapGroupAlpha (\r -> (r ^. DT.sexC, r ^. DT.education4C))
+          $ SG.secondOrderAlphaDC prefixM MC.sexG (enumI, enumS @DT.Sex) MC.eduG (enumI, enumS @DT.Education4) (refSex, refEducation) as_BP
+  let sexRaceAG = do
+        sigmaSexRace <- DAG.simpleParameterWA
+                         (TE.NamedDeclSpec (prefixed "sigmaSexRace") $ TE.realSpec [TE.lowerM $ TE.realE 0])
+                         stdNormalDWA
+        let as_NDS = alphaNDS (SMB.groupSizeE MC.sexG `TE.timesE` SMB.groupSizeE MC.raceG `TE.minusE` TE.intE 1) "SexRace"
+            as_BP ::  DAG.BuildParameter TE.ECVec
+            as_BP = DAG.UntransformedP
+                    as_NDS [] (sigmaSexRace :> TNil)
+                    $ \(sigmaE :> TNil) m -> TE.addStmt $ TE.sample m SF.normalS (TE.realE 0 :> sigmaE :> TNil)
+        pure $ SG.contramapGroupAlpha (\r -> (r ^. DT.sexC, r ^. DT.race5C))
+          $ SG.secondOrderAlphaDC prefixM MC.sexG (enumI, enumS @DT.Sex) MC.raceG (enumI, enumS @DT.Race5) (refSex, refRace) as_BP
+
   let ageEduAG = do
         sigmaAgeEdu <-  DAG.simpleParameterWA
                          (TE.NamedDeclSpec (prefixed "sigmaAgeEdu") $ TE.realSpec [TE.lowerM $ TE.realE 0])
@@ -403,9 +440,51 @@ setupAlphaSum prefixM states alphas = do
         pure $ SG.contramapGroupAlpha (\r -> (r ^. GT.stateAbbreviation, r ^. DT.education4C, r ^. DT.race5C))
           $ SG.thirdOrderAlpha prefixM MC.stateG stateI MC.eduG enumI MC.raceG enumI aStER_BP
   case alphas of
+    MC.A -> do
+      zeroAG <- zeroAG_C
+      SG.setupAlphaSum @_ @_ @_ @(F.Record GroupR) (zeroAG :> ageAG :> TNil)
+    MC.S -> do
+      zeroAG <- zeroAG_C
+      SG.setupAlphaSum @_ @_ @_ @(F.Record GroupR) (zeroAG :> sexAG :> TNil)
+    MC.E -> do
+      zeroAG <- zeroAG_C
+      SG.setupAlphaSum @_ @_ @_ @(F.Record GroupR) (zeroAG :> eduAG :> TNil)
+    MC.R -> do
+      zeroAG <- zeroAG_C
+      SG.setupAlphaSum @_ @_ @_ @(F.Record GroupR) (zeroAG :> raceAG :> TNil)
+    MC.A_S -> do
+      zeroAG <- zeroAG_C
+      SG.setupAlphaSum @_ @_ @_ @(F.Record GroupR) (zeroAG :> ageAG :> sexAG :> TNil)
+    MC.A_E -> do
+      zeroAG <- zeroAG_C
+      SG.setupAlphaSum @_ @_ @_ @(F.Record GroupR) (zeroAG :> ageAG :> eduAG :> TNil)
+    MC.A_S_AS -> do
+      zeroAG <- zeroAG_C
+      asAG <- ageSexAG
+      SG.setupAlphaSum @_ @_ @_ @(F.Record GroupR) (zeroAG :> ageAG :> sexAG :> asAG :> TNil)
+    MC.S_E -> do
+      zeroAG <- zeroAG_C
+      SG.setupAlphaSum @_ @_ @_ @(F.Record GroupR) (zeroAG :> sexAG :> eduAG :> TNil)
+    MC.S_R -> do
+      zeroAG <- zeroAG_C
+      SG.setupAlphaSum @_ @_ @_ @(F.Record GroupR) (zeroAG :> sexAG :> raceAG :> TNil)
+    MC.A_E_AE -> do
+      zeroAG <- zeroAG_C
+      aeAG <- ageEduAG
+      SG.setupAlphaSum @_ @_ @_ @(F.Record GroupR) (zeroAG :> ageAG :> eduAG :> aeAG :> TNil)
     MC.A_S_E_R -> do
       zeroAG <- zeroAG_C
       SG.setupAlphaSum @_ @_ @_ @(F.Record GroupR) (zeroAG :> ageAG :> sexAG :> eduAG :> raceAG :> TNil)
+    MC.A_S_E_R_AS_AE_AR_SE_SR_ER -> do
+      zeroAG <- zeroAG_C
+      asAG <- ageSexAG
+      aeAG <- ageEduAG
+      arAG <- ageRaceAG
+      seAG <- sexEduAG
+      srAG <- sexRaceAG
+      erAG <- eduRaceAG
+      SG.setupAlphaSum @_ @_ @_ @(F.Record GroupR) (zeroAG :> ageAG :> sexAG :> eduAG :> raceAG :>
+                                                     asAG :> aeAG :> arAG :> seAG :> srAG :> erAG :> TNil)
     MC.St_A_S_E_R -> do
       stAG <- stateAG_C
       SG.setupAlphaSum @_ @_ @_ @(F.Record GroupR) (stAG :> ageAG :> sexAG :> eduAG :> raceAG :> TNil)

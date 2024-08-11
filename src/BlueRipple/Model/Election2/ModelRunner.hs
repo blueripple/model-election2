@@ -82,6 +82,7 @@ FTH.declareColumn "ModelCI" ''MT.ConfidenceInterval
 FTH.declareColumn "ModelA" ''Double
 FTH.declareColumn "ModelP" ''Double
 FTH.declareColumn "WgtdX" ''Double
+FTH.declareColumn "RatioResult" ''Double
 
 data CacheStructure a b =
   CacheStructure
@@ -802,7 +803,8 @@ psBy runModel = do
     let whenMatched :: F.Record ks -> MT.ConfidenceInterval -> Int -> Either Text (F.Record  (ks V.++ [DT.PopCount, ModelCI]))
         whenMatched k t p = pure $ k F.<+> (p F.&: t F.&: V.RNil :: F.Record [DT.PopCount, ModelCI])
         whenMissingPC k _ = Left $ "psBy: " <> show k <> " is missing from PopCount map."
-        whenMissingT k _ = Left $ "psBy: " <> show k <> " is missing from probs map."
+        whenMissingT k p = pure $ k F.<+> (p F.&: MT.ConfidenceInterval 0 0.5 1 F.&: V.RNil :: F.Record [DT.PopCount, ModelCI])
+        -- whenMissingT k _ = Left $ "psBy: " <> show k <> " is missing from probs map: (size=" <> show (M.size psMap) <> ")"
     mergedMap <- K.knitEither
                  $ MM.mergeA (MM.traverseMissing whenMissingPC) (MM.traverseMissing whenMissingT) (MM.zipWithAMatched whenMatched) psMap pcMap
     pure $ F.toFrame $ M.elems mergedMap
@@ -1109,6 +1111,19 @@ addBallotsCountedVEP fr = do
   pure $ fmap F.rcast joined
 
 
+
+oneCatRatioFld :: (F.Record rs -> Double) -> (F.Record rs -> Double) -> (F.Record rs -> Bool) -> FL.Fold (F.Record rs) Double
+oneCatRatioFld n d test = FL.prefilter test ((/) <$> FL.premap n FL.sum <*> FL.premap d FL.sum)
+
+ratioFld :: forall ks rs . (Ord (F.Record ks), ks F.⊆ rs, rs F.⊆ rs, FSI.RecVec (ks V.++ '[RatioResult]))
+               => (F.Record rs -> Double) -> (F.Record rs -> Double) -> FL.Fold (F.Record rs) (F.FrameRec (ks V.++ '[RatioResult]))
+ratioFld n d = FMR.concatFold
+               $ FMR.mapReduceFold
+               FMR.noUnpack
+               (FMR.assignKeysAndData @ks @rs)
+               (FMR.foldAndAddKey innerFld)
+  where
+    innerFld = fmap (FT.recordSingleton @RatioResult) $ ((/) <$> FL.premap n FL.sum <*> FL.premap d FL.sum)
 
 modelCIToModelPr :: (F.RDelete ModelCI rs V.++ '[ModelPr] F.⊆ ('[ModelPr] V.++ rs)
                     , F.ElemOf rs ModelCI)
