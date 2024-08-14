@@ -82,6 +82,7 @@ raceG = SMB.GroupTypeTag "Race"
 
 data Alphas = A | S | E | R
             | A_S | A_E | S_E | S_R
+            | AS
             | A_S_AS
             | A_E_AE
             | A_S_E_R
@@ -95,10 +96,13 @@ data Alphas = A | S | E | R
             | St_A_S_E_R_AE_AR_ER_StR
             | St_A_S_E_R_ER_StE_StR
             | St_A_S_E_R_ER_StA_StE_StR
-            | St_A_S_E_R_ER_StR_StER deriving stock (Eq, Ord, Show)
+            | St_A_S_E_R_ER_StR_StER
+            | St_A_S_E_R_StA_StS_StE_StR_AS_AE_AR_SE_SR_ER_StER deriving stock (Eq, Ord, Show)
 
 alphasText :: Alphas -> Text
-alphasText = show
+alphasText = \case
+ St_A_S_E_R_StA_StS_StE_StR_AS_AE_AR_SE_SR_ER_StER -> "Fst_2nd_StER"
+ x -> show x
 {-
 alphasText St_A_S_E_R = "St_A_S_E_R"
 alphasText St_A_S_E_R_ER = "St_A_S_E_R_ER"

@@ -383,6 +383,20 @@ setupAlphaSum prefixM states alphas = do
                      (\(s :> r :> TNil) -> DAG.DeclRHS $ s `TE.timesE` r)
         pure $ SG.contramapGroupAlpha (\r -> (r ^. GT.stateAbbreviation, r ^. DT.age5C))
           $ SG.secondOrderAlpha prefixM MC.stateG stateI MC.ageG enumI aStA_BP
+      stateSexAG = do
+        sigmaStateSex <-  DAG.simpleParameterWA
+                           (TE.NamedDeclSpec (prefixed "sigmaStateSex") $ TE.realSpec [TE.lowerM $ TE.realE 0])
+                           stdNormalDWA
+        let ds = TE.matrixSpec (SMB.groupSizeE MC.stateG) (SMB.groupSizeE MC.sexG) []
+            rawNDS = TE.NamedDeclSpec (prefixed "alpha_State_Sex_raw") ds
+        rawAlphaStateSexP <- DAG.iidMatrixP rawNDS [] TNil SF.std_normal
+        let aStS_NDS = TE.NamedDeclSpec (prefixed "alpha_State_Sex") ds
+        let aStS_BP :: DAG.BuildParameter TE.EMat
+            aStS_BP = DAG.simpleTransformedP aStS_NDS [] (sigmaStateSex :> rawAlphaStateSexP :> TNil)
+                     DAG.TransformedParametersBlock
+                     (\(s :> r :> TNil) -> DAG.DeclRHS $ s `TE.timesE` r)
+        pure $ SG.contramapGroupAlpha (\r -> (r ^. GT.stateAbbreviation, r ^. DT.sexC))
+          $ SG.secondOrderAlpha prefixM MC.stateG stateI MC.sexG enumI aStS_BP
       stateEduAG = do
         sigmaStateEdu <-  DAG.simpleParameterWA
                            (TE.NamedDeclSpec (prefixed "sigmaStateEdu") $ TE.realSpec [TE.lowerM $ TE.realE 0])
@@ -462,6 +476,10 @@ setupAlphaSum prefixM states alphas = do
       zeroAG <- zeroAG_C
       asAG <- ageSexAG
       SG.setupAlphaSum @_ @_ @_ @(F.Record GroupR) (zeroAG :> ageAG :> sexAG :> asAG :> TNil)
+    MC.AS -> do
+      zeroAG <- zeroAG_C
+      asAG <- ageSexAG
+      SG.setupAlphaSum @_ @_ @_ @(F.Record GroupR) (zeroAG :> asAG :> TNil)
     MC.S_E -> do
       zeroAG <- zeroAG_C
       SG.setupAlphaSum @_ @_ @_ @(F.Record GroupR) (zeroAG :> sexAG :> eduAG :> TNil)
@@ -535,6 +553,23 @@ setupAlphaSum prefixM states alphas = do
       erAG <- eduRaceAG
       serAG <- stateEduRace
       SG.setupAlphaSum (stAG :> ageAG :> sexAG :> eduAG :> raceAG :> erAG :> srAG :> serAG :> TNil)
+    MC.St_A_S_E_R_StA_StS_StE_StR_AS_AE_AR_SE_SR_ER_StER -> do
+      stAG <- stateAG_C
+      saAG <- stateAgeAG
+      ssAG <- stateSexAG
+      seAG <- stateEduAG
+      srAG <- stateRaceAG
+      asAG <- ageSexAG
+      aeAG <- ageEduAG
+      arAG <- ageRaceAG
+      sxeAG <- sexEduAG
+      sxrAG <- sexRaceAG
+      erAG <- eduRaceAG
+      serAG <- stateEduRace
+      SG.setupAlphaSum (stAG :> ageAG :> sexAG :> eduAG :> raceAG
+                        :> saAG :> ssAG :> seAG :> srAG
+                        :> asAG :> aeAG :> arAG :> sxeAG :> sxrAG :> erAG
+                        :> serAG :> TNil)
 
 setupBeta :: Maybe Text -> MC.ModelConfig b -> SMB.StanBuilderM md gq (Maybe TE.VectorE)
 setupBeta prefixM mc = do

@@ -83,6 +83,7 @@ FTH.declareColumn "ModelA" ''Double
 FTH.declareColumn "ModelP" ''Double
 FTH.declareColumn "WgtdX" ''Double
 FTH.declareColumn "RatioResult" ''Double
+FTH.declareColumn "SumResult" ''Double
 
 data CacheStructure a b =
   CacheStructure
@@ -379,6 +380,7 @@ type ActionModelC l ks =
   (
     PSTypeC l ks '[ModelPr]
   , PSDataTypeTC ks
+--  , Show (F.Frame (F.Rec F.ElField (l V.++ PSResultR)))
   )
 
 runActionModelAH :: forall l ks r a b .
@@ -411,12 +413,15 @@ runActionModelAH year cacheStructure mc ac scenarioM psData_C = K.wrapPrefix "ru
     K.logLE K.Info "merging AH probs and CIs"
     let psProbMap = M.fromList $ fmap (\r -> (F.rcast @l r, r ^. modelPr)) $ FL.fold FL.list ahps
         whenMatched _ p ci = pure $ adjustCI p ci
-        whenMissingPS l _ = K.knitError $ "runActionModelAH: key present in model CIs is missing from AHPS: " <> show l
-        whenMissingCI l ci = do
-          K.logLE K.Warning $ "runActionModelAH: key present in AHPS is missing from CIs: " <> show l <> ". Using unadjusted."
-          pure ci
+        whenMissingCI l p = if p == 0 then pure (MT.ConfidenceInterval 0 0 0)
+                            else K.knitError
+                                 $ "runActionModelAH: key present in Ps (with non-zero p) is missing from CIs: " <> show l
+                                 <> "cisM=" <> show (MC.unPSMap cisM)
+        whenMissingPS l _ = K.knitError
+                             $ "runActionModelAH: key present in CIs is missing from Ps: " <> show l
+                             <> "psProbMap=" <> show psProbMap
     MC.PSMap
-      <$> MM.mergeA (MM.traverseMissing whenMissingPS) (MM.traverseMissing whenMissingCI) (MM.zipWithAMatched whenMatched) psProbMap (MC.unPSMap cisM)
+      <$> MM.mergeA (MM.traverseMissing whenMissingCI) (MM.traverseMissing whenMissingPS) (MM.zipWithAMatched whenMatched) psProbMap (MC.unPSMap cisM)
 
 type JoinPR ks = FJ.JoinResult3 StateAndCats (DP.PSDataR ks) (StateCatsPlus '[ModelPr]) (StateCatsPlus '[ModelA])
 
@@ -569,12 +574,14 @@ runPrefModelAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCatego
     K.logLE K.Info "merging AH probs and CIs"
     let psProbMap = M.fromList $ fmap (\r -> (F.rcast @l r, r ^. modelPr)) $ FL.fold FL.list ahps
         whenMatched _ p ci = pure $ adjustCI p ci
-        whenMissingPS l _ = K.knitError $ "runPrefModelAH: key present in model CIs is missing from AHPS: " <> show l
-        whenMissingCI l ci = do
-          K.logLE K.Warning $ "runPrefModelAH: key present in AHPS is missing from CIs: " <> show l <> ". Continuing with unadjusted."
-          pure ci
+        whenMissingCI l p = if p == 0 then pure (MT.ConfidenceInterval 0 0 0)
+                                           else K.knitError
+                                                $ "runPrefModelAH: key present in model p's (with p /= 0) is missing from AHPS: " <> show l
+                                                <> "cisMap=" <> show (MC.unPSMap cisM)
+        whenMissingPS l _ = K.knitError
+                            $ "runPrefModelAH: key present in CIs is missing from probs: " <> show l <> "psProbMap=" <> show psProbMap
     MC.PSMap
-      <$> MM.mergeA (MM.traverseMissing whenMissingPS) (MM.traverseMissing whenMissingCI) (MM.zipWithAMatched whenMatched) psProbMap (MC.unPSMap cisM)
+      <$> MM.mergeA (MM.traverseMissing whenMissingCI) (MM.traverseMissing whenMissingPS) (MM.zipWithAMatched whenMatched) psProbMap (MC.unPSMap cisM)
 
 {-
 runFullModel :: forall l r ks a b .
@@ -680,12 +687,16 @@ runFullModelAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCatego
   BRCC.retrieveOrMakeD cacheKey resMapDeps $ \(ahps, (cisM, _)) -> do
     K.logLE K.Info "merging AH probs and CIs"
     let psProbMap = M.fromList $ fmap (\r -> (F.rcast @l r, r ^. modelPr)) $ FL.fold FL.list ahps
-        whenMatched _ p ci = Right $ adjustCI p ci
-        whenMissingPS l _ = Left $ "runFullModelAH: key present in model CIs is missing from AHPS: " <> show l
-        whenMissingCI l _ = Left $ "runFullModelAH: key present in AHPS is missing from CIs: " <> show l
+        whenMatched _ p ci = pure $ adjustCI p ci
+        whenMissingCI l p = if p == 0
+                            then pure (MT.ConfidenceInterval 0 0 0)
+                            else K.knitError
+                                 $ "runFullModelAH: key present in p's (with p /= 0) is missing from model CIs:" <> show l
+                                 <> "ciMap=" <> show (MC.unPSMap cisM)
+        whenMissingPS l _ = K.knitError
+                            $ "runFullModelAH: key present in CIs is missing from probs: " <> show l <> "psProbs=" <> show psProbMap
     MC.PSMap
-      <$> (K.knitEither
-            $ MM.mergeA (MM.traverseMissing whenMissingPS) (MM.traverseMissing whenMissingCI) (MM.zipWithAMatched whenMatched) psProbMap (MC.unPSMap cisM))
+      <$> MM.mergeA (MM.traverseMissing whenMissingCI) (MM.traverseMissing whenMissingPS) (MM.zipWithAMatched whenMatched) psProbMap (MC.unPSMap cisM)
 
 allCellProbsPS :: Set Text -> Double -> DP.PSData (GT.StateAbbreviation ': DP.DCatsR)
 allCellProbsPS states avgPWDensity =
@@ -1124,6 +1135,16 @@ ratioFld n d = FMR.concatFold
                (FMR.foldAndAddKey innerFld)
   where
     innerFld = fmap (FT.recordSingleton @RatioResult) $ ((/) <$> FL.premap n FL.sum <*> FL.premap d FL.sum)
+
+sumFld :: forall ks rs . (Ord (F.Record ks), ks F.⊆ rs, rs F.⊆ rs, FSI.RecVec (ks V.++ '[SumResult]))
+       => (F.Record rs -> Double) ->  FL.Fold (F.Record rs) (F.FrameRec (ks V.++ '[SumResult]))
+sumFld toX =  FMR.concatFold
+              $ FMR.mapReduceFold
+              FMR.noUnpack
+              (FMR.assignKeysAndData @ks @rs)
+              (FMR.foldAndAddKey innerFld)
+  where
+    innerFld = fmap (FT.recordSingleton @SumResult) (FL.premap toX FL.sum)
 
 modelCIToModelPr :: (F.RDelete ModelCI rs V.++ '[ModelPr] F.⊆ ('[ModelPr] V.++ rs)
                     , F.ElemOf rs ModelCI)
