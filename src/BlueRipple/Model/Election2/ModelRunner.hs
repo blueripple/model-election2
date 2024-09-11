@@ -6,6 +6,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
@@ -44,6 +45,7 @@ import qualified BlueRipple.Data.Keyed as Keyed
 import qualified BlueRipple.Utilities.HvegaJsonData as BRHJ
 import qualified BlueRipple.Model.TurnoutAdjustment as TA
 
+import qualified Polysemy as P
 import qualified Knit.Report as K hiding (elements)
 
 import qualified Control.Foldl as FL
@@ -289,6 +291,13 @@ modelCPs year cacheStructure config = K.wrapPrefix "modelCPs" $ do
 data Scenario ks where
   SimpleScenario :: Text -> (F.Record ks -> (Double -> Double)) -> Scenario ks
 
+instance Semigroup (Scenario a) where
+  (SimpleScenario t1 f1) <> (SimpleScenario t2 f2) = SimpleScenario (t1 <> "_" <> t2) (\r -> f2 r . f1 r)
+
+instance Semigroup (Scenario a) => Monoid (Scenario a) where
+  mempty = SimpleScenario "" (const id)
+  mappend = (<>)
+
 applyScenario :: ks F.⊆ rs => Lens' (F.Record rs) Double -> Scenario ks -> F.Record rs -> F.Record rs
 applyScenario pLens (SimpleScenario _ f) r = over pLens (f (F.rcast r)) r
 
@@ -437,11 +446,17 @@ type PSDataTypePC ks = ( FJ.CanLeftJoinWithMissing3 StateAndCats (DP.PSDataR ks)
 
 -- For registration we use partisan id as the preference since some states don't have voters register for a particular party
 -- And we use 2-party share, D / (D + R) rather than D / (D + R + O)
-data PrefDTargetCategory r = RegDTargets | VoteDTargets (DP.DShareTargetConfig r)
+data PrefDTargetCategory (r :: P.EffectRow) where
+  RegDTargets :: PrefDTargetCategory '[]
+  VoteDTargets :: DP.DShareTargetConfig r -> PrefDTargetCategory r
+  CESImpliedDVotes :: K.ActionWithCacheTime r (F.FrameRec (DP.StateKeyR V.++ DP.DCatsR V.++ DP.CountDataR V.++ DP.PrefDataR)) -> PrefDTargetCategory r
+  CESImpliedDPID :: K.ActionWithCacheTime r (F.FrameRec (DP.StateKeyR V.++ DP.DCatsR V.++ DP.CountDataR V.++ DP.PrefDataR)) -> PrefDTargetCategory r
 
 catFromPrefTargets :: PrefDTargetCategory r -> MC.ModelCategory
 catFromPrefTargets RegDTargets = MC.Reg
 catFromPrefTargets (VoteDTargets _) = MC.Vote
+catFromPrefTargets (CESImpliedDVotes _) = MC.Vote
+catFromPrefTargets (CESImpliedDPID _) = MC.Reg
 
 statePrefDTargets :: (K.KnitEffects r, BRCC.CacheEffects r)
                   => PrefDTargetCategory r
@@ -467,12 +482,33 @@ statePrefDTargets cat cacheStructure = case cat of
     let deps = (,) <$> cesData_C <*> stateTurnout_C
     BRCC.retrieveOrMakeFrame statePIDCacheKey deps $ \(ces, stateTurnout) -> do
       let regTargets = FL.fold outerFold ces
-          (joined, missing) = FJ.leftJoinWithMissing @'[GT.StateAbbreviation] regTargets stateTurnout
+          (joined, missing) = FJ.leftJoinWithMissing @'[GT.StateAbbreviation] regTargets $ F.filterFrame ((== 2020) . view BRDF.year) stateTurnout
       when (not $ null missing) $ K.knitError $ "statePrefDTargets: missing keys in reg/turnout join: k=" <> show missing
       pure $ fmap (F.rcast . FT.replaceColumn @BRDF.VEP @DP.TargetPop id) joined
   VoteDTargets dShareTargetConfig -> do
     dVoteTargets_C <- DP.dShareTarget (csProjectCacheDirE cacheStructure) dShareTargetConfig
     pure $ fmap (F.rcast . FT.replaceColumn @ET.DemShare @DP.PrefDTarget id) <$> dVoteTargets_C
+  CESImpliedDVotes ces_C -> do
+    stateTurnout_C <- BRDF.stateTurnoutLoader
+    let deps = (,) <$> ces_C <*> stateTurnout_C
+        f (ces, stateTurnout) = do
+          let wsdPS = FL.fold (psFold @'[GT.StateAbbreviation]
+                               (\r -> r ^. DP.surveyWeight * realToFrac (r ^. DP.dVotes))
+                               (\r -> r ^. DP.surveyWeight * realToFrac (r ^. DP.votesInRace))
+                               (const 1))
+                      $ F.filterFrame ((> 0) . view DP.votesInRace) ces
+          let wsd = weightedSurveyData @'[GT.StateAbbreviation]
+                    (view DP.surveyWeight)
+                    (\r -> realToFrac (r ^. DP.dVotes) / realToFrac (r ^. DP.votesInRace))
+                    $ F.filterFrame ((> 0) . view DP.votesInRace) ces
+              (joined, missing) = FJ.leftJoinWithMissing @'[GT.StateAbbreviation] wsd $ F.filterFrame ((== 2020) . view BRDF.year) stateTurnout
+          when (not $ null missing) $ K.knitError $ "statePrefDTargets: Missing keys in weighted survey/state-turnout join: " <> show missing
+          pure $ fmap (F.rcast @[GT.StateAbbreviation, DP.TargetPop, DP.PrefDTarget]
+                        . FT.replaceColumn @WgtdX @DP.PrefDTarget id
+                        . FT.replaceColumn @BRDF.VAP @DP.TargetPop id) joined
+    pure $ K.wctBind f deps
+  CESImpliedDPID ces -> undefined
+
 
 runPrefModelCPAH :: forall ks r a b .
                   (K.KnitEffects r
@@ -498,6 +534,8 @@ runPrefModelCPAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCate
       (prefCacheDir, prefTargetText) = case prefDTargetCategory of
         RegDTargets -> ("Reg/CES", "PID")
         VoteDTargets dShareTargetConfig -> ("Pref/CES", DP.dShareTargetText dShareTargetConfig)
+        CESImpliedDVotes _ -> ("Pref/CES", "CES_Implied")
+        CESImpliedDPID _ -> ("Reg/CES", "CES_Implied")
       cacheSuffix = prefCacheDir <> show year <> "_" <> MC.modelConfigText pc.pcModelConfig <> "/"
                     <> csAllCellPSPrefix cacheStructure
                     <> maybe "" (("_" <>) .  scenarioCacheText) aScenarioM
@@ -564,6 +602,8 @@ runPrefModelAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCatego
       (prefCacheDir, prefTargetText) = case prefDTargetCategory of
         RegDTargets -> ("Reg/CES", "PID")
         VoteDTargets dShareTargetConfig -> ("Pref/CES", DP.dShareTargetText dShareTargetConfig)
+        CESImpliedDVotes _ -> ("Pref/CES", "CES_Implied")
+        CESImpliedDPID _ -> ("Reg/CES", "CES_Implied")
       cacheSuffix = prefCacheDir <> show year <> "_" <> MC.modelConfigText pc.pcModelConfig
                     <> csPSName cacheStructure
                     <> maybe "" (("_" <>) .  scenarioCacheText) aScenarioM
@@ -652,6 +692,8 @@ runFullModelAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCatego
   let (fullCacheDir, prefTargetText) = case prefDTargetCategory of
         RegDTargets -> ("RFull/", "PID")
         VoteDTargets dShareTargetConfig -> ("Full/", DP.dShareTargetText dShareTargetConfig)
+        CESImpliedDVotes _ -> ("Pref/CES", "CES_Implied")
+        CESImpliedDPID _ -> ("Reg/CES", "CES_Implied")
   let cacheMid =  fullCacheDir <> MC.actionSurveyText ac.acSurvey <> show year <> "_" <> MC.modelConfigText pc.pcModelConfig
       ahpsCacheSuffix = cacheMid
                         <> csAllCellPSPrefix cacheStructure
@@ -827,6 +869,23 @@ psByState ::  (K.KnitEffects r, BRCC.CacheEffects r)
           -> K.Sem r (F.FrameRec ([GT.StateAbbreviation, DT.PopCount, ModelCI] V.++ bs))
 psByState runModel addStateFields = psBy @'[GT.StateAbbreviation] runModel >>= addStateFields
 
+
+popCountBy' :: forall ks rs .
+              (--K.KnitEffects r
+--              , BRCC.CacheEffects r
+                ks F.⊆ rs, F.ElemOf rs DT.PopCount, Ord (F.Record ks)
+              , FSI.RecVec (ks V.++ '[DT.PopCount])
+              )
+           => F.FrameRec rs
+           -> F.FrameRec (ks V.++ '[DT.PopCount])
+popCountBy' = FL.fold aggFld
+  where aggFld = FMR.concatFold
+                 $ FMR.mapReduceFold
+                 FMR.noUnpack
+                 (FMR.assignKeysAndData @ks @'[DT.PopCount])
+                 (FMR.foldAndAddKey $ FF.foldAllConstrained @Num FL.sum)
+
+
 popCountBy :: forall ks rs r .
               (--K.KnitEffects r
 --              , BRCC.CacheEffects r
@@ -835,14 +894,7 @@ popCountBy :: forall ks rs r .
               )
            => K.ActionWithCacheTime r (F.FrameRec rs)
            -> K.Sem r (F.FrameRec (ks V.++ '[DT.PopCount]))
-popCountBy counts_C = do
-  counts <- K.ignoreCacheTime counts_C
-  let aggFld = FMR.concatFold
-               $ FMR.mapReduceFold
-               FMR.noUnpack
-               (FMR.assignKeysAndData @ks @'[DT.PopCount])
-               (FMR.foldAndAddKey $ FF.foldAllConstrained @Num FL.sum)
-  pure $ FL.fold aggFld counts
+popCountBy counts_C = popCountBy' @ks <$> K.ignoreCacheTime counts_C
 
 popCountByMap :: forall ks rs r .
                  (K.KnitEffects r

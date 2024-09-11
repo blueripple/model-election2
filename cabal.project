@@ -5,11 +5,14 @@ with-compiler: ghc
 allow-newer: polysemy-zoo:ghc-prim, streamly-core
            , freer-simple:template-haskell
            , foldl-statistics:hashable, foldl-statistics:profunctors
-           , cereal-time:time
-           , heidi:base
-           , generic-trie:base
+--           , cereal-time:time
+--           , heidi:base
+--           , generic-trie:base
            , streamly-bytestring:streamly-core
            , nonlinear-optimization:primitive, nonlinear-optimization:vector
+           , bytestring
+           , base
+           , time
 
 flags: +streamly9
 
