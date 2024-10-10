@@ -114,21 +114,23 @@ cachedPreppedModelData :: (K.KnitEffects r, BRCC.CacheEffects r)
                        -> MC2.Config a b
                        -> K.Sem r (K.ActionWithCacheTime r (DP.ModelData DP.CDKeyR))
 cachedPreppedModelData cacheStructure config = K.wrapPrefix "cachedPreppedModelData" $ do
-  let sp = case config of
-        MC2.ActionOnly _ (MC.ActionConfig as _) -> case as of
-          MC.CESSurvey sp' -> sp'
-          MC.CPSSurvey -> DP.AllSurveyed DP.Both -- this is unused
-        MC2.PrefOnly _ (MC.PrefConfig sp' _) -> sp'
-        MC2.ActionAndPref _ _ (MC.PrefConfig sp' _) -> sp'
+  let (sp, ws) = case config of
+        MC2.ActionOnly _ ws' (MC.ActionConfig as _) -> case as of
+          MC.CESSurvey sp' -> (sp', ws')
+          MC.CPSSurvey -> (DP.AllSurveyed DP.Both, ws') -- this is unused
+        MC2.PrefOnly _ ws' (MC.PrefConfig sp' _) -> (sp', ws')
+        MC2.ActionAndPref _ ws' _ (MC.PrefConfig sp' _) -> (sp', ws')
   cacheDirE' <- K.knitMaybe "Empty cacheDir given!" $ BRCC.insureFinalSlashE $ csProjectCacheDirE cacheStructure
-  let appendCacheFile :: Text -> Text -> Text
-      appendCacheFile t d = d <> t
-      cpsModelCacheE = bimap (appendCacheFile "CPSModelData.bin") (appendCacheFile "CPSModelData.bin") cacheDirE'
-      cesByStateModelCacheE = bimap (appendCacheFile "CESModelData.bin") (appendCacheFile "CESByStateModelData.bin") cacheDirE'
-      cesByCDModelCacheE = bimap (appendCacheFile "CESModelData.bin") (appendCacheFile "CESByCDModelData.bin") cacheDirE'
-  rawCESByCD_C <- DP.cesCountedDemPresVotesByCD False sp DP.DesignEffectWeights
-  rawCESByState_C <- DP.cesCountedDemPresVotesByState False sp DP.DesignEffectWeights
-  rawCPS_C <- DP.cpsCountedTurnoutByState
+  let appendCacheFileCES :: Text -> Text -> Text
+      appendCacheFileCES t d = d <> t <> "_" <> DP.surveyPortionText sp <> "_" <> DP.weightingStyleText ws <> ".bin"
+      appendCacheFileCPS :: Text -> Text -> Text
+      appendCacheFileCPS t d = d <> t <> "_" <> DP.weightingStyleText ws <> ".bin"
+      cpsModelCacheE = bimap (appendCacheFileCPS "CPSModelData") (appendCacheFileCPS "CPSModelData") cacheDirE'
+      cesByStateModelCacheE = bimap (appendCacheFileCES "CESModelData") (appendCacheFileCES "CESByStateModelData") cacheDirE'
+      cesByCDModelCacheE = bimap (appendCacheFileCES "CESModelData") (appendCacheFileCES "CESByCDModelData") cacheDirE'
+  rawCESByCD_C <- DP.cesCountedDemPresVotesByCD False sp ws
+  rawCESByState_C <- DP.cesCountedDemPresVotesByState False sp ws
+  rawCPS_C <- DP.cpsCountedTurnoutByState ws
   DP.cachedPreppedModelDataCD cpsModelCacheE rawCPS_C cesByStateModelCacheE rawCESByState_C cesByCDModelCacheE rawCESByCD_C
 
 runBaseModel ::  forall l r ks a b .
@@ -146,15 +148,15 @@ runBaseModel ::  forall l r ks a b .
 runBaseModel year cacheStructure config psData_C = do
   let runConfig = MC.RunConfig False False (Just $ MC.psGroupTag @l)
       modelName = case config of
-        MC2.ActionOnly cat ac -> case cat of
-          MC.Reg -> MC.actionSurveyText ac.acSurvey <> "R_" <> show year
-          MC.Vote -> MC.actionSurveyText ac.acSurvey <> "T_" <> show year
-        MC2.PrefOnly cat (MC.PrefConfig sp _) -> case cat of
-          MC.Reg -> "RP_" <> DP.surveyPortionText sp <> "_" <> show year
-          MC.Vote -> "P_" <> DP.surveyPortionText sp <> "_" <> show year
-        MC2.ActionAndPref cat ac _ -> case cat of
-          MC.Reg -> MC.actionSurveyText ac.acSurvey <> "RF_" <> show year
-          MC.Vote -> MC.actionSurveyText ac.acSurvey <> "F_" <> show year
+        MC2.ActionOnly cat ws ac -> case cat of
+          MC.Reg -> MC.actionSurveyText ac.acSurvey <> DP.weightingStyleText ws <> "R_" <> show year
+          MC.Vote -> MC.actionSurveyText ac.acSurvey <> DP.weightingStyleText ws <> "T_" <> show year
+        MC2.PrefOnly cat ws (MC.PrefConfig sp _) -> case cat of
+          MC.Reg -> "RP_" <> DP.surveyPortionText sp <> DP.weightingStyleText ws <> "_" <> show year
+          MC.Vote -> "P_" <> DP.surveyPortionText sp <> DP.weightingStyleText ws <> "_" <> show year
+        MC2.ActionAndPref cat ws ac _ -> case cat of
+          MC.Reg -> MC.actionSurveyText ac.acSurvey <> DP.weightingStyleText ws <> "RF_" <> show year
+          MC.Vote -> MC.actionSurveyText ac.acSurvey <> DP.weightingStyleText ws <> "F_" <> show year
   modelData_C <- cachedPreppedModelData cacheStructure config
   MC2.runModel (csModelDirE cacheStructure) modelName
     (csPSName cacheStructure) runConfig config modelData_C psData_C
@@ -272,15 +274,15 @@ modelCPs :: forall r a b .
 modelCPs year cacheStructure config = K.wrapPrefix "modelCPs" $ do
   modelData <- timed "Loaded model data" $ K.ignoreCacheTimeM $ cachedPreppedModelData (modelCacheStructure cacheStructure) config
   (allStates, avgPWPopPerSqMile) <- case config of
-        MC2.ActionOnly _ ac -> case ac.acSurvey of
+        MC2.ActionOnly _ _ ac -> case ac.acSurvey of
           MC.CESSurvey _ -> pure $ FL.fold ((,) <$> FL.premap (view GT.stateAbbreviation) FL.set <*> FL.premap (view DT.pWPopPerSqMile) FL.mean) modelData.cesData
           MC.CPSSurvey -> pure $ FL.fold ((,) <$> FL.premap (view GT.stateAbbreviation) FL.set <*> FL.premap (view DT.pWPopPerSqMile) FL.mean) modelData.cpsData
-        MC2.PrefOnly _ _ ->  pure $ FL.fold ((,) <$> FL.premap (view GT.stateAbbreviation) FL.set <*> FL.premap (view DT.pWPopPerSqMile) FL.mean) modelData.cesData
-        MC2.ActionAndPref _ _ _ -> K.knitError "modelCPs called with TurnoutAndPref config."
+        MC2.PrefOnly _ _ _ ->  pure $ FL.fold ((,) <$> FL.premap (view GT.stateAbbreviation) FL.set <*> FL.premap (view DT.pWPopPerSqMile) FL.mean) modelData.cesData
+        MC2.ActionAndPref _ _ _ _ -> K.knitError "modelCPs called with TurnoutAndPref config."
   cellPSDataCacheKey <- case config of
-    MC2.ActionOnly _ ac -> pure $ "allCell_" <>  MC.actionSurveyText ac.acSurvey <> "PSData.bin"
-    MC2.PrefOnly _ _ ->  pure $ "allCell_CESPSData.bin"
-    MC2.ActionAndPref _ _ _ -> K.knitError "modelCPs called with TurnoutAndPref config."
+    MC2.ActionOnly _ _ ac -> pure $ "allCell_" <>  MC.actionSurveyText ac.acSurvey <> "PSData.bin"
+    MC2.PrefOnly _ _ _ ->  pure $ "allCell_CESPSData.bin"
+    MC2.ActionAndPref _ _ _ _ -> K.knitError "modelCPs called with TurnoutAndPref config."
   allCellProbsCK <- BRCC.cacheFromDirE (csProjectCacheDirE cacheStructure) cellPSDataCacheKey
   allCellProbsPS_C <-  BRCC.retrieveOrMakeD allCellProbsCK (pure ()) $ \_ -> pure $ allCellProbsPS allStates avgPWPopPerSqMile
   K.logLE K.Diagnostic "Running all cell model, if necessary"
@@ -348,12 +350,13 @@ runActionModelCPAH :: forall ks r a b .
                     => Int
                     -> CacheStructure Text Text
                     -> MC.ModelCategory
+                    -> DP.WeightingStyle
                     -> MC.ActionConfig a b
                     -> Maybe (Scenario DP.PredictorsR)
                     -> K.ActionWithCacheTime r (DP.PSData ks)
                     -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec (AH ks '[ModelPr])))
-runActionModelCPAH year cacheStructure mc ac scenarioM psData_C = K.wrapPrefix "runActionModelCPAH" $ do
-  actionCPs_C <- modelCPs year (allCellCacheStructure cacheStructure) (MC2.ActionOnly mc ac)
+runActionModelCPAH year cacheStructure mc ws ac scenarioM psData_C = K.wrapPrefix "runActionModelCPAH" $ do
+  actionCPs_C <- modelCPs year (allCellCacheStructure cacheStructure) (MC2.ActionOnly mc ws ac)
 --  let stFilter r = r ^. BRDF.year == year && r ^. GT.stateAbbreviation /= "US"
   stateActionTargets_C <- stateActionTargets year mc --fmap (fmap (F.filterFrame stFilter)) BRDF.stateTurnoutLoader
   let actionCacheDir = if mc == MC.Reg then "Registration/" else "Turnout/"
@@ -400,17 +403,18 @@ runActionModelAH :: forall l ks r a b .
                  => Int
                  -> CacheStructure Text Text
                  -> MC.ModelCategory
+                 -> DP.WeightingStyle
                  -> MC.ActionConfig a b
                  -> Maybe (Scenario DP.PredictorsR)
                  -> K.ActionWithCacheTime r (DP.PSData ks)
                  -> K.Sem r (K.ActionWithCacheTime r (MC.PSMap l MT.ConfidenceInterval))
-runActionModelAH year cacheStructure mc ac scenarioM psData_C = K.wrapPrefix "runTurnoutModelAH" $ do
-  actionCPAH_C <- runActionModelCPAH year cacheStructure mc ac scenarioM psData_C
+runActionModelAH year cacheStructure mc ws ac scenarioM psData_C = K.wrapPrefix "runTurnoutModelAH" $ do
+  actionCPAH_C <- runActionModelCPAH year cacheStructure mc ws ac scenarioM psData_C
   let psNum r = (realToFrac $ r ^. DT.popCount) * r ^. modelPr
       psDen r = realToFrac $ r ^. DT.popCount
       actionAHPS_C = fmap (FL.fold (psFold @l psNum psDen (view DT.popCount))) actionCPAH_C
   K.logLE K.Diagnostic "Running action model for CIs, if necessary"
-  actionPSForCI_C <- runBaseModel @l year (modelCacheStructure cacheStructure) (MC2.ActionOnly mc ac) psData_C
+  actionPSForCI_C <- runBaseModel @l year (modelCacheStructure cacheStructure) (MC2.ActionOnly mc ws ac) psData_C
   let resMapDeps = (,) <$> actionAHPS_C <*> actionPSForCI_C
       actionCacheDir = if mc == MC.Reg then "Registration/" else "Turnout/"
       cacheSuffix = actionCacheDir <> MC.actionSurveyText ac.acSurvey <> show year <> "_" <> MC.modelConfigText ac.acModelConfig
@@ -493,21 +497,21 @@ statePrefDTargets cat cacheStructure = case cat of
     let deps = (,) <$> ces_C <*> stateTurnout_C
         f (ces, stateTurnout) = do
           let wsdPS = FL.fold (psFold @'[GT.StateAbbreviation]
-                               (\r -> r ^. DP.surveyWeight * realToFrac (r ^. DP.dVotes))
-                               (\r -> r ^. DP.surveyWeight * realToFrac (r ^. DP.votesInRace))
+                               (\r -> realToFrac (r ^. DP.dVotesW))
+                               (\r -> realToFrac (r ^. DP.votesInRaceW))
                                (const 1))
                       $ F.filterFrame ((> 0) . view DP.votesInRace) ces
-          let wsd = weightedSurveyData @'[GT.StateAbbreviation]
-                    (view DP.surveyWeight)
-                    (\r -> realToFrac (r ^. DP.dVotes) / realToFrac (r ^. DP.votesInRace))
-                    $ F.filterFrame ((> 0) . view DP.votesInRace) ces
-              (joined, missing) = FJ.leftJoinWithMissing @'[GT.StateAbbreviation] wsd $ F.filterFrame ((== 2020) . view BRDF.year) stateTurnout
+--          let wsd = weightedSurveyData @'[GT.StateAbbreviation]
+--                    (view DP.surveyWeight)
+--                    (\r -> realToFrac (r ^. DP.dVotes) / realToFrac (r ^. DP.votesInRace))
+--                    $ F.filterFrame ((> 0) . view DP.votesInRace) ces
+              (joined, missing) = FJ.leftJoinWithMissing @'[GT.StateAbbreviation] wsdPS $ F.filterFrame ((== 2020) . view BRDF.year) stateTurnout
           when (not $ null missing) $ K.knitError $ "statePrefDTargets: Missing keys in weighted survey/state-turnout join: " <> show missing
           pure $ fmap (F.rcast @[GT.StateAbbreviation, DP.TargetPop, DP.PrefDTarget]
-                        . FT.replaceColumn @WgtdX @DP.PrefDTarget id
+                        . FT.replaceColumn @ModelPr @DP.PrefDTarget id
                         . FT.replaceColumn @BRDF.VAP @DP.TargetPop id) joined
     pure $ K.wctBind f deps
-  CESImpliedDPID ces -> undefined
+  CESImpliedDPID _ces_C -> undefined
 
 
 runPrefModelCPAH :: forall ks r a b .
@@ -518,6 +522,7 @@ runPrefModelCPAH :: forall ks r a b .
                   )
                  => Int
                  -> CacheStructure Text Text
+                 -> DP.WeightingStyle
                  -> MC.ActionConfig a b  -- we need a turnout model for the AH adjustment
                  -> Maybe (Scenario DP.PredictorsR)
                  -> MC.PrefConfig b
@@ -525,10 +530,10 @@ runPrefModelCPAH :: forall ks r a b .
                  -> PrefDTargetCategory r -- DP.DShareTargetConfig r
                  -> K.ActionWithCacheTime r (DP.PSData ks)
                  -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec (AH ks '[ModelPr, ModelA])))
-runPrefModelCPAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCategory psData_C = K.wrapPrefix "runPrefModelCPAH" $ do
+runPrefModelCPAH year cacheStructure ws ac aScenarioM pc pScenarioM prefDTargetCategory psData_C = K.wrapPrefix "runPrefModelCPAH" $ do
   let mc = catFromPrefTargets prefDTargetCategory
-  actionCPAH_C <- runActionModelCPAH year cacheStructure mc ac aScenarioM psData_C
-  prefCPs_C <- modelCPs year (allCellCacheStructure cacheStructure) (MC2.PrefOnly mc pc)
+  actionCPAH_C <- runActionModelCPAH year cacheStructure mc ws ac aScenarioM psData_C
+  prefCPs_C <- modelCPs year (allCellCacheStructure cacheStructure) (MC2.PrefOnly mc ws pc)
   prefDTargets_C <- statePrefDTargets prefDTargetCategory cacheStructure --DP.dShareTarget (csProjectCacheDirE cacheStructure) dShareTargetConfig
   let ahDeps = (,,,) <$> actionCPAH_C <*> prefCPs_C <*> psData_C <*> prefDTargets_C
       (prefCacheDir, prefTargetText) = case prefDTargetCategory of
@@ -583,6 +588,7 @@ runPrefModelAH :: forall l ks r a b .
                   )
                => Int
                -> CacheStructure Text Text
+               -> DP.WeightingStyle
                -> MC.ActionConfig a b  -- we need a turnout model for the AH adjustment
                -> Maybe (Scenario DP.PredictorsR)
                -> MC.PrefConfig b
@@ -590,14 +596,14 @@ runPrefModelAH :: forall l ks r a b .
                -> PrefDTargetCategory r --DP.DShareTargetConfig r
                -> K.ActionWithCacheTime r (DP.PSData ks)
                -> K.Sem r (K.ActionWithCacheTime r (MC.PSMap l MT.ConfidenceInterval))
-runPrefModelAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCategory psData_C = K.wrapPrefix "runPrefModelAH" $ do
+runPrefModelAH year cacheStructure ws ac aScenarioM pc pScenarioM prefDTargetCategory psData_C = K.wrapPrefix "runPrefModelAH" $ do
   let mc = catFromPrefTargets prefDTargetCategory
-  prefCPAH_C <- runPrefModelCPAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCategory psData_C
+  prefCPAH_C <- runPrefModelCPAH year cacheStructure ws ac aScenarioM pc pScenarioM prefDTargetCategory psData_C
   let psNum r = (realToFrac $ r ^. DT.popCount) * r ^. modelPr
       psDen r = realToFrac $ r ^. DT.popCount
       prefAHPS_C = fmap (FL.fold (psFold @l psNum psDen (view DT.popCount))) prefCPAH_C
   K.logLE K.Diagnostic "Running pref model for CIs, if necessary"
-  prefPSForCI_C <- runBaseModel @l year (modelCacheStructure cacheStructure) (MC2.PrefOnly mc pc) psData_C
+  prefPSForCI_C <- runBaseModel @l year (modelCacheStructure cacheStructure) (MC2.PrefOnly mc ws pc) psData_C
   let resMapDeps = (,) <$> prefAHPS_C <*> prefPSForCI_C
       (prefCacheDir, prefTargetText) = case prefDTargetCategory of
         RegDTargets -> ("Reg/CES", "PID")
@@ -677,6 +683,7 @@ runFullModelAH :: forall l ks r a b .
                   )
                => Int
                -> CacheStructure Text Text
+               -> DP.WeightingStyle
                -> MC.ActionConfig a b
                -> Maybe (Scenario DP.PredictorsR)
                -> MC.PrefConfig b
@@ -684,11 +691,11 @@ runFullModelAH :: forall l ks r a b .
                -> PrefDTargetCategory r
                -> K.ActionWithCacheTime r (DP.PSData ks)
                -> K.Sem r (K.ActionWithCacheTime r (MC.PSMap l MT.ConfidenceInterval))
-runFullModelAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCategory psData_C = K.wrapPrefix "runFullModelAH" $ do
+runFullModelAH year cacheStructure ws ac aScenarioM pc pScenarioM prefDTargetCategory psData_C = K.wrapPrefix "runFullModelAH" $ do
   let mc = catFromPrefTargets prefDTargetCategory
 --  let cachePrefixT = "model/election2/Turnout/" <> MC.turnoutSurveyText ts <> show year <> "_" <> MC.aggregationText sa <> "_" <> MC.alphasText am <> "/"
 --  turnoutCPAH_C <- runTurnoutModelCPAH year modelDirE cacheDirE gqName cmdLine ts sa dmr pst am "AllCells" psData_C
-  prefCPAH_C <- runPrefModelCPAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCategory psData_C
+  prefCPAH_C <- runPrefModelCPAH year cacheStructure ws ac aScenarioM pc pScenarioM prefDTargetCategory psData_C
   let (fullCacheDir, prefTargetText) = case prefDTargetCategory of
         RegDTargets -> ("RFull/", "PID")
         VoteDTargets dShareTargetConfig -> ("Full/", DP.dShareTargetText dShareTargetConfig)
@@ -718,7 +725,7 @@ runFullModelAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCatego
         psDen r = ppl r * t r
     pure $ FL.fold (psFold @l psNum psDen (view DT.popCount)) joined
   K.logLE K.Diagnostic "Running full model for CIs, if necessary"
-  fullPSForCI_C <- runBaseModel @l year (modelCacheStructure cacheStructure) (MC2.ActionAndPref mc ac pc) psData_C
+  fullPSForCI_C <- runBaseModel @l year (modelCacheStructure cacheStructure) (MC2.ActionAndPref mc ws ac pc) psData_C
 
   let cacheSuffix = cacheMid <> csPSName cacheStructure <>  "_"
                     <> maybe "" (("_" <>) .  scenarioCacheText) aScenarioM
@@ -799,16 +806,17 @@ allModelsCompChart :: forall ks r b pbase . (K.KnitOne r, BRCC.CacheEffects r, P
                    -> [MC.Alphas]
                    -> K.Sem r ()
 allModelsCompChart jsonLocations surveyDataBy runModel catLabel modelType catText aggs' alphaModels' = do
+  let weightingStyle = DP.CellWeights
   allModels <- allModelsCompBy @ks runModel catLabel aggs' alphaModels'
-  cesSurveyPW <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.AllSurveyed DP.Both) DP.DesignEffectWeights
-  cesSurveyPWVV <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.Validated DP.Both) DP.DesignEffectWeights
+  cesSurveyPW <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.AllSurveyed DP.Both) weightingStyle
+  cesSurveyPWVV <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.Validated DP.Both) weightingStyle
 --  cesSurveyDEW <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.AllSurveyed DP.Both) DP.DesignEffectWeights
 --  cesSurveyDEWVV <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.Validated DP.Both) DP.DesignEffectWeights
   let cesCompUW = surveyDataBy (Just $ MC.UnweightedAggregation) cesSurveyPW
       cesCompUW_VV = surveyDataBy (Just $ MC.UnweightedAggregation) cesSurveyPWVV
-{-      cesCompW = surveyDataBy  Nothing cesSurveyPW
-      cesCompW_VV = surveyDataBy  Nothing cesSurveyPWVV
-      cesCompPW = surveyDataBy  (Just $ MC.RoundedWeightedAggregation) cesSurveyPW
+      cesCompCW = surveyDataBy  (Just $ MC.WeightedAggregation MC.ContinuousBinomial) cesSurveyPW
+      cesCompCW_VV = surveyDataBy  (Just $ MC.WeightedAggregation MC.ContinuousBinomial) cesSurveyPWVV
+{-      cesCompPW = surveyDataBy  (Just $ MC.RoundedWeightedAggregation) cesSurveyPW
       cesCompPW_VV = surveyDataBy  (Just $ MC.RoundedWeightedAggregation) cesSurveyPWVV
       cesCompRPW = surveyDataBy (Just $ MC.WeightedAggregation MC.ContinuousBinomial) cesSurveyPW
       cesCompRPW_VV = surveyDataBy (Just $ MC.WeightedAggregation MC.ContinuousBinomial) cesSurveyPWVV
@@ -821,8 +829,8 @@ allModelsCompChart jsonLocations surveyDataBy runModel catLabel modelType catTex
   catCompChart <- categoryChart @ks jsonLocations (modelType <> " Comparison By Category") (modelType <> "Comp")
                   (FV.fixedSizeVC 300 (50 * realToFrac numSources) 10) (Just cats) (Just $ fmap fst allModels)
                   catText allModels (Just [("UW Survey", cesCompUW),("UW VV Survey", cesCompUW_VV)
-{-                                          ,("RPW Survey", cesCompRPW), ("RPW VV Survey", cesCompRPW_VV)
-                                          , ("PW Survey", cesCompPW), ("PW VV Survey", cesCompPW_VV)
+                                          ,("CW Survey", cesCompCW), ("CW VV Survey", cesCompCW_VV)
+{-                                          , ("PW Survey", cesCompPW), ("PW VV Survey", cesCompPW_VV)
                                           , ("W Survey", cesCompW), ("W VV Survey", cesCompW_VV)
 -}
                                           ]

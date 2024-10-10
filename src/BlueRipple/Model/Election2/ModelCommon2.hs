@@ -80,19 +80,19 @@ import Flat.Instances.Vector ()
 --stateG = SMB.GroupTypeTag "State"
 
 data Config a b where
-  ActionOnly :: MC.ModelCategory -> MC.ActionConfig a b -> Config a b
-  PrefOnly :: MC.ModelCategory -> MC.PrefConfig b -> Config (F.Record DP.CESByCDR) b
-  ActionAndPref :: MC.ModelCategory -> MC.ActionConfig a b -> MC.PrefConfig b -> Config a b
+  ActionOnly :: MC.ModelCategory -> DP.WeightingStyle -> MC.ActionConfig a b -> Config a b
+  PrefOnly :: MC.ModelCategory -> DP.WeightingStyle -> MC.PrefConfig b -> Config (F.Record DP.CESByCDR) b
+  ActionAndPref :: MC.ModelCategory -> DP.WeightingStyle -> MC.ActionConfig a b -> MC.PrefConfig b -> Config a b
 
 configModelCategory :: Config a b -> MC.ModelCategory
-configModelCategory (ActionOnly mc _) = mc
-configModelCategory (PrefOnly mc _) = mc
-configModelCategory (ActionAndPref mc _ _) = mc
+configModelCategory (ActionOnly mc _ _) = mc
+configModelCategory (PrefOnly mc _ _) = mc
+configModelCategory (ActionAndPref mc _ _ _) = mc
 
 actionSurvey :: Config a b -> Maybe (MC.ActionSurvey a)
-actionSurvey (ActionOnly _ (MC.ActionConfig rs _)) = Just rs
-actionSurvey (PrefOnly _ _) = Nothing
-actionSurvey (ActionAndPref _ (MC.ActionConfig ts _) _) = Just ts
+actionSurvey (ActionOnly _ _ (MC.ActionConfig rs _)) = Just rs
+actionSurvey (PrefOnly _ _ _) = Nothing
+actionSurvey (ActionAndPref _ _ (MC.ActionConfig ts _) _) = Just ts
 
 usesCPS :: Config a b -> Bool
 usesCPS c = case actionSurvey c of
@@ -109,22 +109,29 @@ usesCES c = case actionSurvey c of
     _ -> False
 
 usesCESPref :: Config a b -> Bool
-usesCESPref (ActionOnly _ _)  = False
-usesCESPref (PrefOnly _ _) = True
-usesCESPref (ActionAndPref _ _ _) = True
+usesCESPref (ActionOnly _ _ _)  = False
+usesCESPref (PrefOnly _ _ _) = True
+usesCESPref (ActionAndPref _ _ _ _) = True
+
+weightingStyle :: Config a b -> DP.WeightingStyle
+weightingStyle (ActionOnly _ ws _) = ws
+weightingStyle (PrefOnly _ ws _) = ws
+weightingStyle (ActionAndPref _ ws _ _) = ws
 
 configText :: forall a b. Config a b -> Text
-configText (ActionOnly c (MC.ActionConfig as mc)) = case c of
-  MC.Reg -> "Reg" <> MC.actionSurveyText as <> "_" <> MC.modelConfigText mc
-  MC.Vote -> "Turnout" <> MC.actionSurveyText as <> "_" <> MC.modelConfigText mc
-configText (PrefOnly c (MC.PrefConfig sp mc)) = case c of
-  MC.Reg -> "RegPref" <> "_" <> DP.surveyPortionText sp <> "_" <> MC.modelConfigText mc
-  MC.Vote -> "Pref" <> "_" <> DP.surveyPortionText sp <> "_" <> MC.modelConfigText mc
-configText (ActionAndPref c (MC.ActionConfig as tMC) (MC.PrefConfig sp pMC)) = case c of
+configText (ActionOnly c ws (MC.ActionConfig as mc)) = case c of
+  MC.Reg -> "Reg" <> MC.actionSurveyText as <> "_" <> DP.weightingStyleText ws <> "_" <> MC.modelConfigText mc
+  MC.Vote -> "Turnout" <> MC.actionSurveyText as <> "_" <> DP.weightingStyleText ws <> "_" <> MC.modelConfigText mc
+configText (PrefOnly c ws (MC.PrefConfig sp mc)) = case c of
+  MC.Reg -> "RegPref" <> "_" <> DP.surveyPortionText sp <> "_" <> DP.weightingStyleText ws <> "_" <> MC.modelConfigText mc
+  MC.Vote -> "Pref" <> "_" <> DP.surveyPortionText sp <> "_" <> DP.weightingStyleText ws <> "_" <> MC.modelConfigText mc
+configText (ActionAndPref c ws (MC.ActionConfig as tMC) (MC.PrefConfig sp pMC)) = case c of
   MC.Reg -> "RegBoth" <> MC.actionSurveyText as
-             <> "_" <> MC.modelConfigText tMC
-             <> "_" <> MC.modelConfigText pMC
+            <> "_" <> DP.weightingStyleText ws
+            <> "_" <> MC.modelConfigText tMC
+            <> "_" <> MC.modelConfigText pMC
   MC.Vote -> "Both" <> MC.actionSurveyText as
+             <> "_" <> DP.weightingStyleText ws
              <> "_" <> MC.modelConfigText tMC
              <> "_" <> MC.modelConfigText pMC
 
@@ -194,11 +201,11 @@ actionModelData c (MC.ActionConfig ts mc) = do
     MC.CPSSurvey -> case mc.mcSurveyAggregation of
       MC.UnweightedAggregation -> fmap MC.ModelData $ cpsSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc uwSurveyed uwAction
       MC.RoundedWeightedAggregation -> fmap MC.ModelData $ cpsSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc rwSurveyed rwAction
-      MC.WeightedAggregation _  -> fmap MC.ModelData $ cpsSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc wSurveyed wAction
+      MC.WeightedAggregation _ -> fmap MC.ModelData $ cpsSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc wSurveyed wAction
     MC.CESSurvey _ -> case mc.mcSurveyAggregation of
       MC.UnweightedAggregation -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc uwSurveyed uwAction
       MC.RoundedWeightedAggregation -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc rwSurveyed rwAction
-      MC.WeightedAggregation _  -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc wSurveyed wAction
+      MC.WeightedAggregation _ -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc wSurveyed wAction
 
 prefModelData :: forall b gq lk . MC.ModelCategory -> MC.PrefConfig b
               -> SMB.StanBuilderM (DP.ModelData lk) gq (MC.ModelData (F.Record DP.CESByCDR) b)
@@ -231,7 +238,7 @@ prefModelData c (MC.PrefConfig _x mc) = do
   case mc.mcSurveyAggregation of
     MC.UnweightedAggregation -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc uwAction uwPrefD
     MC.RoundedWeightedAggregation -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc rwAction rwPrefD
-    MC.WeightedAggregation _  -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc wAction wPrefD
+    MC.WeightedAggregation _ -> fmap MC.ModelData $ cesSurveyDataTag >>= \rtt -> MC.covariatesAndCountsFromData rtt mc wAction wPrefD
 
 stdNormalDWA :: (TE.TypeOneOf t [TE.EReal, TE.ECVec, TE.ERVec], TE.GenSType t) => TE.DensityWithArgs t
 stdNormalDWA = TE.DensityWithArgs SF.std_normal TNil
@@ -804,7 +811,7 @@ model :: forall k lk l a b .
       -> [Text]
       -> SMB.StanBuilderM (DP.ModelData lk) (DP.PSData k) ()
 model rc c states = case c of
-  ActionOnly cat actionConfig@(MC.ActionConfig _ mc) -> do
+  ActionOnly cat _ws actionConfig@(MC.ActionConfig _ mc) -> do
     mData <- actionModelData cat actionConfig
     paramSetup <- setupParameters Nothing states mc
     (Components modelM llM ppM centerF) <- components Nothing (MC.covariatesAndCounts mData) paramSetup mc.mcSurveyAggregation
@@ -820,7 +827,7 @@ model rc c states = case c of
         psRowTag <- SMB.dataSetTag @(F.Record (DP.PSDataR k)) SC.GQData "PSData"
         postStratifyOne psRowTag (view DT.popCount) F.rcast actionLabel paramSetup Nothing Nothing mc.mcDesignMatrixRow (Just $ centerF SC.GQData) Nothing gtt >> pure ()
 
-  PrefOnly cat prefConfig@(MC.PrefConfig _ mc) -> do
+  PrefOnly cat _ws prefConfig@(MC.PrefConfig _ mc) -> do
     mData <- prefModelData cat prefConfig
     paramSetup <- setupParameters Nothing states mc
     (Components modelM llM ppM centerF) <- components Nothing (MC.covariatesAndCounts mData) paramSetup mc.mcSurveyAggregation
@@ -836,7 +843,7 @@ model rc c states = case c of
         psRowTag <- SMB.dataSetTag @(F.Record (DP.PSDataR k)) SC.GQData "PSData"
         postStratifyOne psRowTag (view DT.popCount) F.rcast prefLabel paramSetup Nothing Nothing mc.mcDesignMatrixRow (Just $ centerF SC.GQData) Nothing gtt >> pure ()
 
-  ActionAndPref cat aConfig@(MC.ActionConfig _ aMC) pConfig@(MC.PrefConfig _ pMC) -> do
+  ActionAndPref cat _ws aConfig@(MC.ActionConfig _ aMC) pConfig@(MC.PrefConfig _ pMC) -> do
     let (actionLabel, prefLabel, psLabel) = case cat of
                                      MC.Reg -> ("R", "PR", "RDVS") -- Registration
                                      MC.Vote -> ("T", "P", "DVS") -- Votes
@@ -922,13 +929,13 @@ runModel modelDirE modelName gqName runConfig config modelData_C psData_C = do
         MC.Reg -> ("Registered", "DReg" :: Text, jsonData "Registered", jsonData "Surveyed", jsonData "DReg", jsonData "Registered")
         MC.Vote -> ("Turnout", "DVotes", jsonData "Voted", jsonData "Surveyed", jsonData "DVotes", jsonData "VotesInRace")
       unwraps = case config of
-        ActionOnly _ (MC.ActionConfig _ mc) -> case mc.mcSurveyAggregation of
+        ActionOnly _ _ws (MC.ActionConfig _ mc) -> case mc.mcSurveyAggregation of
           MC.WeightedAggregation MC.BetaProportion -> [SR.UnwrapExpr (aNum <> " / " <> aDenom) ("y" <> aFieldName <> "Rate_" <> rSuffix)]
           _ -> [SR.UnwrapNamed aFieldName ("y" <> aFieldName <> "_" <> rSuffix)]
-        PrefOnly _ (MC.PrefConfig _ mc) -> case mc.mcSurveyAggregation of
+        PrefOnly _ _ws (MC.PrefConfig _ mc) -> case mc.mcSurveyAggregation of
           MC.WeightedAggregation MC.BetaProportion -> [SR.UnwrapExpr (pNum <> " / " <> pDenom) ("y" <> pFieldName <> "Rate_" <> rSuffix)]
           _ -> [SR.UnwrapNamed pFieldName ("y" <> pFieldName <> "_" <> rSuffix)]
-        ActionAndPref _ _ _  -> [] -- what is a PP check for this combo case??
+        ActionAndPref _ _ws _ _  -> [] -- what is a PP check for this combo case??
   res_C <- SMR.runModel' @BRCC.SerializerC @BRCC.CacheData
            modelDirE
            (Right runnerInputNames)
@@ -976,14 +983,14 @@ adjustPredictionsForDensity getP setP mp dmr row = setP p' row
 deriving anyclass instance Flat.Flat ModelParameters
 
 actionSurveyA :: Config a b -> Maybe (MC.ActionSurvey a)
-actionSurveyA (ActionOnly _ (MC.ActionConfig ts _)) = Just ts
-actionSurveyA (PrefOnly _ (MC.PrefConfig sp _)) = Just $ MC.CESSurvey sp
-actionSurveyA (ActionAndPref _ (MC.ActionConfig _ _) _) = Nothing
+actionSurveyA (ActionOnly _ _ (MC.ActionConfig ts _)) = Just ts
+actionSurveyA (PrefOnly _ _ (MC.PrefConfig sp _)) = Just $ MC.CESSurvey sp
+actionSurveyA (ActionAndPref _ _ (MC.ActionConfig _ _) _) = Nothing
 
 dmrA :: Config a b -> Maybe (DM.DesignMatrixRow (F.Record DP.LPredictorsR))
-dmrA (ActionOnly _ (MC.ActionConfig _ (MC.ModelConfig _ _ dmr))) = Just dmr
-dmrA (PrefOnly _ (MC.PrefConfig _ (MC.ModelConfig _ _ dmr))) = Just dmr
-dmrA (ActionAndPref _ _ _) = Nothing
+dmrA (ActionOnly _ _ (MC.ActionConfig _ (MC.ModelConfig _ _ dmr))) = Just dmr
+dmrA (PrefOnly _ _ (MC.PrefConfig _ (MC.ModelConfig _ _ dmr))) = Just dmr
+dmrA (ActionAndPref _ _ _ _) = Nothing
 
 --NB: parsed summary data has stan indexing, i.e., Arrays start at 1.
 --NB: Will return no prediction (Nothing) for "both" model for now. Might eventually return both predictions?
@@ -1028,9 +1035,9 @@ modelResultAction config runConfig = SC.UseSummary f where
         Just gqDaI_C -> do
           let getVectorPcts n = K.knitEither $ SP.getVector . fmap CS.percents <$> SP.parse1D n (CS.paramStats summary)
               psPrefix = case config of
-                ActionOnly mCat _ -> if mCat == MC.Reg then "R" else "T"
-                PrefOnly mCat _ -> if mCat == MC.Reg then "RP" else "P"
-                ActionAndPref mCat _ _ -> if mCat == MC.Reg then "RDVS" else "DVS"
+                ActionOnly mCat _ _ -> if mCat == MC.Reg then "R" else "T"
+                PrefOnly mCat _ _ -> if mCat == MC.Reg then "RP" else "P"
+                ActionAndPref mCat _ _ _ -> if mCat == MC.Reg then "RDVS" else "DVS"
           (_, gqIndexesE) <- K.ignoreCacheTime gqDaI_C
           grpIM <- K.knitEither
              $ gqIndexesE >>= SMB.getGroupIndex (SMB.RowTypeTag @(F.Record (DP.PSDataR k)) SC.GQData "PSData") (MC.psGroupTag @l)
