@@ -239,8 +239,8 @@ realCountModelText BetaProportion = "BP"
 
 data SurveyAggregation b where
   UnweightedAggregation :: SurveyAggregation TE.EIntArray
-  RoundedWeightedAggregation :: SurveyAggregation TE.EIntArray
-  WeightedAggregation :: RealCountModel -> SurveyAggregation TE.ECVec
+  RoundedWeightedAggregation :: DP.WeightingStyle -> SurveyAggregation TE.EIntArray
+  WeightedAggregation :: RealCountModel -> DP.WeightingStyle -> SurveyAggregation TE.ECVec
 
 actionSurveyText :: ActionSurvey a -> Text
 actionSurveyText (CESSurvey sp) = "CES_" <> DP.surveyPortionText sp
@@ -253,13 +253,13 @@ psTargetsText PSTargets = "PSTgt"
 
 aggregationText :: SurveyAggregation b -> Text
 aggregationText UnweightedAggregation = "UW"
-aggregationText RoundedWeightedAggregation = "RW"
-aggregationText (WeightedAggregation cm) = "WA" <> realCountModelText cm
+aggregationText (RoundedWeightedAggregation ws) = "RW" <> DP.weightingStyleText ws
+aggregationText (WeightedAggregation cm ws ) = "WA" <> realCountModelText cm <> DP.weightingStyleText ws
 
 addAggregationText :: SurveyAggregation b -> Text
 addAggregationText UnweightedAggregation = "_UW"
-addAggregationText RoundedWeightedAggregation = "_RW"
-addAggregationText (WeightedAggregation cm) = "_WA" <> realCountModelText cm
+addAggregationText (RoundedWeightedAggregation ws) = "_RW" <> DP.weightingStyleText ws
+addAggregationText (WeightedAggregation cm ws) = "_WA" <> realCountModelText cm <> DP.weightingStyleText ws
 
 data BinomialData (b :: TE.EType) =
   BinomialData
