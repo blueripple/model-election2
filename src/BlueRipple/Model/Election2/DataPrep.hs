@@ -603,12 +603,25 @@ weightedQtyF :: WeightingStyle -> (r -> Int) -> (r -> Double) -> (r -> Double) -
 weightedQtyF ws nF wgtF essF qtyF r = weightedQty ws (nF r) (wgtF r) (essF r)  (qtyF r)
 
 weightedFld :: WeightingStyle -> (r -> Int) -> (r -> Double) -> (r -> Double) -> (r -> Double) -> FL.Fold r (Double, Double)
-weightedFld ws nF wgtF essF qtyF =
+weightedFld ws nF wgtF essF wqtyF =
   let n = FL.premap nF FL.sum
       wgt = FL.premap wgtF FL.sum
       ess = FL.premap essF FL.sum -- this isn't correct
-      wqty = FL.premap qtyF FL.sum
+      wqty = FL.premap wqtyF FL.sum
   in (\n' wgt' ess' wqty' -> (weightedCount ws n' wgt' ess', weightedQty ws n' wgt' ess' wqty')) <$> n <*> wgt <*> ess <*> wqty
+
+weightedFld' :: WeightingStyle -> (r -> Int) -> (r -> Double) -> (r -> Double) -> (r -> Double) -> FL.Fold r (Double, Double)
+weightedFld' ws nF wgtF essF wqtyF =
+  let (c, q) = case ws of
+        FullWeights -> (FL.premap wgtF FL.sum, FL.premap wqtyF FL.sum)
+        CellWeights ->
+          let f r = realToFrac (nF r) * wqtyF r / wgtF r
+          in (realToFrac <$> FL.premap nF FL.sum, FL.premap f FL.sum)
+        DesignEffectWeights ->
+          let f r = essF r * wqtyF r / wgtF r
+          in (FL.premap essF FL.sum, FL.premap f FL.sum)
+  in (,) <$> c <*> q
+
 
 {-
 data WeightedFolds r a = WeightedFolds { wfCount :: FL.Fold r a
@@ -626,7 +639,7 @@ weightedFolds ws wgt = WeightedFolds cF qF where
   (cF, qF) = case ws of
     FullWeights -> (wgtSumF, wgtQtyF)
     CellWeights ->
-      let c = FL.length
+       let c = FL.length
           q f = (\c' wn ws -> realToFrac c' * safeDiv wn ws) <$> c <*> wgtQtyF f <*> wgtSumF
       in (realToFrac <$> c, q)
     DesignEffectWeights ->
@@ -773,6 +786,7 @@ cesMR ∷ forall lk rs f m .
         (Foldable f, Functor f, Monad m
         , FC.ElemsOf rs [BR.Year, DT.EducationC, DT.HispC, DT.Race5C, CCES.VRegistrationC, CCES.PartisanId3, CCES.PartisanId7, CCES.VTurnoutC
                         , CCES.CESPreWeight, CCES.CESPostWeight, CCES.CESVVPreWeight, CCES.CESVVPostWeight]
+        , FC.ElemsOf (((lk V.++ DCatsR) V.++ CountDataR) V.++ PrefDataR) '[SurveyWeight]
 --        , F.ElemOf rs CCES.CCESWeight
         , rs F.⊆ (DT.Education4C ': rs)
         , (lk V.++ DCatsR) V.++ (CountDataR V.++ PrefDataR) ~ (((lk V.++ DCatsR) V.++ CountDataR) V.++ PrefDataR)
@@ -783,7 +797,8 @@ cesMR ∷ forall lk rs f m .
       ⇒ SurveyPortion
       -> Int → (F.Record rs -> MT.MaybeData ET.PartyT) -> f (F.Record rs) → m (F.FrameRec (lk V.++ DCatsR V.++ CountDataR V.++ PrefDataR))
 cesMR sp earliestYear votePartyMD =
-  BRF.frameCompactMR
+  fmap (F.filterFrame ((/= 0) . view surveyWeight))
+  . BRF.frameCompactMR
   unpack
   (FMR.assignKeysAndData @(lk V.++ DCatsR) @rs)
   (countCESVotesF sp votePartyMD)

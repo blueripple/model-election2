@@ -762,19 +762,22 @@ allCellProbsPS states avgPWDensity =
   in DP.PSData $ F.toFrame allCellRecList
 
 
-modelCompBy :: forall ks r b . (K.KnitEffects r, BRCC.CacheEffects r, PSByC ks)
-            => (Text -> MC.SurveyAggregation b -> MC.Alphas -> K.Sem r (K.ActionWithCacheTime r (MC.PSMap ks MT.ConfidenceInterval)))
+modelCompBy :: forall ks ks' r b . (K.KnitEffects r, BRCC.CacheEffects r, PSByC ks)
+            => (MC.SurveyAggregation b -> K.Sem r (K.ActionWithCacheTime r (DP.PSData ks')))
+            -> (K.ActionWithCacheTime r (DP.PSData ks') -> Text -> MC.SurveyAggregation b -> MC.Alphas ->  K.Sem r (K.ActionWithCacheTime r (MC.PSMap ks MT.ConfidenceInterval)))
             -> Text -> MC.SurveyAggregation b -> MC.Alphas -> K.Sem r (Text, F.FrameRec (ks V.++ '[DT.PopCount, ModelCI]))
-modelCompBy runModel catLabel agg am = do
+modelCompBy psByAgg runModel catLabel agg am = do
   K.logLE K.Info $ "Model Comp By for " <> catLabel
-  comp <- psBy @ks (runModel catLabel agg am)
+  psData_C <- psByAgg agg
+  comp <- psBy @ks (runModel psData_C (catLabel <> MC.addAggregationText agg) agg am)
   pure (MC.aggregationText agg <> "_" <> MC.alphasText am, comp)
 
-allModelsCompBy :: forall ks r b . (K.KnitEffects r, BRCC.CacheEffects r, PSByC ks)
-                => (Text -> MC.SurveyAggregation b -> MC.Alphas -> K.Sem r (K.ActionWithCacheTime r (MC.PSMap ks MT.ConfidenceInterval)))
+allModelsCompBy :: forall ks ks' r b . (K.KnitEffects r, BRCC.CacheEffects r, PSByC ks)
+                => (MC.SurveyAggregation b -> K.Sem r (K.ActionWithCacheTime r (DP.PSData ks')))
+                -> (K.ActionWithCacheTime r (DP.PSData ks') -> Text -> MC.SurveyAggregation b -> MC.Alphas ->  K.Sem r (K.ActionWithCacheTime r (MC.PSMap ks MT.ConfidenceInterval)))
                 -> Text -> [MC.SurveyAggregation b] -> [MC.Alphas] -> K.Sem r [(Text, F.FrameRec (ks V.++ '[DT.PopCount, ModelCI]))]
-allModelsCompBy runModel catLabel aggs' alphaModels' =
-  traverse (\(agg, am) -> modelCompBy @ks runModel catLabel agg am) [(agg, am) | agg <- aggs',  am <- alphaModels']
+allModelsCompBy psByAgg runModel catLabel aggs' alphaModels' =
+  traverse (\(agg, am) -> modelCompBy @ks psByAgg runModel catLabel agg am) [(agg, am) | agg <- aggs',  am <- alphaModels']
 
 forStatesChart ::  (F.RDelete ModelCI (ks V.++ '[DT.PopCount, ModelCI]) V.++ '[ModelPr] F.⊆ ('[ModelPr] V.++ (ks V.++ '[DT.PopCount, ModelCI]))
                    , F.ElemOf (ks V.++ '[DT.PopCount, ModelCI]) ModelCI)
@@ -782,7 +785,7 @@ forStatesChart ::  (F.RDelete ModelCI (ks V.++ '[DT.PopCount, ModelCI]) V.++ '[M
                -> [(Text, F.FrameRec (F.RDelete ModelCI (ks V.++ '[DT.PopCount, ModelCI]) V.++ '[ModelPr]))]
 forStatesChart t = fmap (first (t <>))  . fmap (second $ fmap modelCIToModelPr)
 
-allModelsCompChart :: forall ks r b pbase . (K.KnitOne r, BRCC.CacheEffects r, PSByC ks, Keyed.FiniteSet (F.Record ks)
+allModelsCompChart :: forall ks ks' r b pbase . (K.KnitOne r, BRCC.CacheEffects r, PSByC ks, Keyed.FiniteSet (F.Record ks)
                                             , F.ElemOf (ks V.++ [DT.PopCount, ModelCI]) DT.PopCount
                                             , F.ElemOf (ks V.++ [DT.PopCount, ModelCI]) ModelCI
                                             , ks F.⊆ (ks V.++ [DT.PopCount, ModelCI])
@@ -793,24 +796,28 @@ allModelsCompChart :: forall ks r b pbase . (K.KnitOne r, BRCC.CacheEffects r, P
                                         )
                    => BRHJ.JsonLocations pbase
                    -> (forall c. SurveyDataBy ks (DP.CDKeyR V.++ DP.DCatsR V.++ DP.CountDataR V.++ DP.PrefDataR) c)
-                   -> (Text -> MC.SurveyAggregation b -> MC.Alphas -> K.Sem r (K.ActionWithCacheTime r (MC.PSMap ks MT.ConfidenceInterval)))
+                   -> (MC.SurveyAggregation b -> K.Sem r (K.ActionWithCacheTime r (DP.PSData ks')))
+                   -> (K.ActionWithCacheTime r (DP.PSData ks') -> Text -> MC.SurveyAggregation b -> MC.Alphas ->  K.Sem r (K.ActionWithCacheTime r (MC.PSMap ks MT.ConfidenceInterval)))
                    -> Text
                    -> Text
                    -> (F.Record ks -> Text)
                    -> [MC.SurveyAggregation b]
                    -> [MC.Alphas]
                    -> K.Sem r ()
-allModelsCompChart jsonLocations surveyDataBy runModel catLabel modelType catText aggs' alphaModels' = do
+allModelsCompChart jsonLocations surveyDataBy psByAgg runModel catLabel modelType catText aggs' alphaModels' = do
   let weightingStyle = DP.CellWeights
-  allModels <- allModelsCompBy @ks runModel catLabel aggs' alphaModels'
+  allModels <- allModelsCompBy @ks psByAgg runModel catLabel aggs' alphaModels'
   cesSurvey <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.AllSurveyed DP.Both)
   cesSurveyVV <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.Validated DP.Both)
 --  cesSurveyDEW <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.AllSurveyed DP.Both) DP.DesignEffectWeights
 --  cesSurveyDEWVV <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.Validated DP.Both) DP.DesignEffectWeights
   let cesCompUW = surveyDataBy Nothing cesSurvey
       cesCompUW_VV = surveyDataBy Nothing cesSurveyVV
+      cesCompFW = surveyDataBy  (Just DP.FullWeights) cesSurvey
+      cesCompFW_VV = surveyDataBy  (Just DP.FullWeights) cesSurveyVV
       cesCompCW = surveyDataBy  (Just DP.CellWeights) cesSurvey
-      cesCompCW_VV = surveyDataBy  (Just DP.CellWeights) cesSurveyVV
+      cesCompDEW = surveyDataBy  (Just DP.DesignEffectWeights) cesSurvey
+
 {-      cesCompPW = surveyDataBy  (Just $ MC.RoundedWeightedAggregation) cesSurveyPW
       cesCompPW_VV = surveyDataBy  (Just $ MC.RoundedWeightedAggregation) cesSurveyPWVV
       cesCompRPW = surveyDataBy (Just $ MC.WeightedAggregation MC.ContinuousBinomial) cesSurveyPW
@@ -824,7 +831,8 @@ allModelsCompChart jsonLocations surveyDataBy runModel catLabel modelType catTex
   catCompChart <- categoryChart @ks jsonLocations (modelType <> " Comparison By Category") (modelType <> "Comp")
                   (FV.fixedSizeVC 300 (50 * realToFrac numSources) 10) (Just cats) (Just $ fmap fst allModels)
                   catText allModels (Just [("UW Survey", cesCompUW),("UW VV Survey", cesCompUW_VV)
-                                          ,("CW Survey", cesCompCW), ("CW VV Survey", cesCompCW_VV)
+                                          ,("FW Survey", cesCompFW), ("FW VV Survey", cesCompFW_VV)
+                                          ,("CW Survey", cesCompCW), ("DEW Survey", cesCompDEW)
 {-                                          , ("PW Survey", cesCompPW), ("PW VV Survey", cesCompPW_VV)
                                           , ("W Survey", cesCompW), ("W VV Survey", cesCompW_VV)
 -}
@@ -944,7 +952,7 @@ turnoutDataBy wsM = FL.fold fld
           vF = fmap realToFrac $ FL.premap (view DP.voted) FL.sum
       in (\v s -> safeDiv v s F.&: V.RNil) <$> vF <*> sF
     wInnerFld :: DP.WeightingStyle -> FL.Fold (F.Record DP.CountDataR) (F.Record '[ModelPr])
-    wInnerFld ws = (\(s, v) -> safeDiv v s F.&: V.RNil) <$> DP.weightedFld ws (view DP.surveyed) (view DP.surveyWeight) (view DP.surveyedESS) (view DP.votedW)
+    wInnerFld ws = (\(s, v) -> safeDiv v s F.&: V.RNil) <$> DP.weightedFld' ws (view DP.surveyed) (view DP.surveyWeight) (view DP.surveyedESS) (view DP.votedW)
     innerFld :: FL.Fold (F.Record DP.CountDataR) (F.Record '[ModelPr])
     innerFld = maybe uwInnerFld wInnerFld wsM
     fld :: FL.Fold (F.Record rs) (F.FrameRec (ks V.++ '[ModelPr]))
