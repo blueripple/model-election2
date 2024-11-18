@@ -698,7 +698,7 @@ runFullModelAH year cacheStructure ac aScenarioM pc pScenarioM prefDTargetCatego
         CESImpliedDPID _ -> ("Reg/CES", "CES_Implied")
   let cacheMid =  fullCacheDir <> MC.actionSurveyText ac.acSurvey <> show year <> "_" <> MC.modelConfigText pc.pcModelConfig
       ahpsCacheSuffix = cacheMid
-                        <> csAllCellPSPrefix cacheStructure
+                        <> csPSName cacheStructure --csAllCellPSPrefix cacheStructure
                         <> maybe "" (("_" <>) .  scenarioCacheText) aScenarioM
                         <> maybe "" (("_" <>) .  scenarioCacheText) pScenarioM
                         <>  "_" <> prefTargetText <> "_PS.bin"
@@ -809,14 +809,15 @@ allModelsCompChart jsonLocations surveyDataBy psByAgg runModel catLabel modelTyp
   allModels <- allModelsCompBy @ks psByAgg runModel catLabel aggs' alphaModels'
   cesSurvey <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.AllSurveyed DP.Both)
   cesSurveyVV <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.Validated DP.Both)
---  cesSurveyDEW <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.AllSurveyed DP.Both) DP.DesignEffectWeights
---  cesSurveyDEWVV <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.Validated DP.Both) DP.DesignEffectWeights
-  let cesCompUW = surveyDataBy Nothing cesSurvey
-      cesCompUW_VV = surveyDataBy Nothing cesSurveyVV
+  let
+--      cesCompUW = surveyDataBy Nothing cesSurvey
+--      cesCompUW_VV = surveyDataBy Nothing cesSurveyVV
       cesCompFW = surveyDataBy  (Just DP.FullWeights) cesSurvey
       cesCompFW_VV = surveyDataBy  (Just DP.FullWeights) cesSurveyVV
       cesCompCW = surveyDataBy  (Just DP.CellWeights) cesSurvey
+      cesCompCW_VV = surveyDataBy  (Just DP.CellWeights) cesSurveyVV
       cesCompDEW = surveyDataBy  (Just DP.DesignEffectWeights) cesSurvey
+      cesCompDEW_VV = surveyDataBy  (Just DP.DesignEffectWeights) cesSurveyVV
 
 {-      cesCompPW = surveyDataBy  (Just $ MC.RoundedWeightedAggregation) cesSurveyPW
       cesCompPW_VV = surveyDataBy  (Just $ MC.RoundedWeightedAggregation) cesSurveyPWVV
@@ -830,9 +831,10 @@ allModelsCompChart jsonLocations surveyDataBy psByAgg runModel catLabel modelTyp
       numSources = length allModels
   catCompChart <- categoryChart @ks jsonLocations (modelType <> " Comparison By Category") (modelType <> "Comp")
                   (FV.fixedSizeVC 300 (50 * realToFrac numSources) 10) (Just cats) (Just $ fmap fst allModels)
-                  catText allModels (Just [("UW Survey", cesCompUW),("UW VV Survey", cesCompUW_VV)
-                                          ,("FW Survey", cesCompFW), ("FW VV Survey", cesCompFW_VV)
-                                          ,("CW Survey", cesCompCW), ("DEW Survey", cesCompDEW)
+                  catText allModels (Just [--("UW Survey", cesCompUW),("UW VV Survey", cesCompUW_VV)
+                                        ("FW Survey", cesCompFW), ("FW VV Survey", cesCompFW_VV)
+                                        ,("CW Survey", cesCompCW), ("CW VV Survey", cesCompCW_VV)
+                                        , ("DEW Survey", cesCompDEW), ("DEW VV Survey", cesCompDEW_VV)
 {-                                          , ("PW Survey", cesCompPW), ("PW VV Survey", cesCompPW_VV)
                                           , ("W Survey", cesCompW), ("W VV Survey", cesCompW_VV)
 -}
@@ -973,7 +975,7 @@ regDataBy wsM = FL.fold fld
           vF = fmap realToFrac $ FL.premap (view DP.registered) FL.sum
       in (\v s -> safeDiv v s F.&: V.RNil) <$> vF <*> sF
     wInnerFld :: DP.WeightingStyle -> FL.Fold (F.Record DP.CountDataR) (F.Record '[ModelPr])
-    wInnerFld ws = (\(s, v) -> safeDiv v s F.&: V.RNil) <$> DP.weightedFld ws (view DP.surveyed) (view DP.surveyWeight) (view DP.surveyedESS) (view DP.registeredW)
+    wInnerFld ws = (\(s, v) -> safeDiv v s F.&: V.RNil) <$> DP.weightedFld' ws (view DP.surveyed) (view DP.surveyWeight) (view DP.surveyedESS) (view DP.registeredW)
     innerFld :: FL.Fold (F.Record DP.CountDataR) (F.Record '[ModelPr])
     innerFld = maybe uwInnerFld wInnerFld wsM
     fld :: FL.Fold (F.Record rs) (F.FrameRec (ks V.++ '[ModelPr]))
@@ -983,7 +985,7 @@ regDataBy wsM = FL.fold fld
           (FMR.assignKeysAndData @ks @DP.CountDataR)
           (FMR.foldAndAddKey innerFld)
 
-prefDataBy :: forall ks rs a. (DP.CountDataR V.++ DP.PrefDataR F.⊆ rs, F.ElemOf rs DP.VotesInRace) => SurveyDataBy ks rs a
+prefDataBy :: forall ks rs a. (DP.CountDataR V.++ DP.PrefDataR F.⊆ rs, F.ElemOf rs DP.VotesInRaceW) => SurveyDataBy ks rs a
 prefDataBy wsM = FL.fold fld
   where
     safeDiv :: Double -> Double -> Double
@@ -994,13 +996,13 @@ prefDataBy wsM = FL.fold fld
           vF = fmap realToFrac $ FL.premap (view DP.dVotes) FL.sum
       in (\v s -> safeDiv v s F.&: V.RNil) <$> vF <*> sF
     wInnerFld :: DP.WeightingStyle -> FL.Fold  (F.Record (DP.CountDataR V.++ DP.PrefDataR)) (F.Record '[ModelPr])
-    wInnerFld ws = (\(s, v) -> safeDiv v s F.&: V.RNil) <$> DP.weightedFld ws (view DP.votesInRace) (view DP.votesInRaceW) (view DP.votesInRaceESS) (view DP.dVotesW)
+    wInnerFld ws = (\(s, v) -> safeDiv v s F.&: V.RNil) <$> DP.weightedFld' ws (view DP.votesInRace) (view DP.votesInRaceW) (view DP.votesInRaceESS) (view DP.dVotesW)
     innerFld :: FL.Fold (F.Record (DP.CountDataR V.++ DP.PrefDataR)) (F.Record '[ModelPr])
     innerFld = maybe uwInnerFld wInnerFld wsM
     fld :: FL.Fold (F.Record rs) (F.FrameRec (ks V.++ '[ModelPr]))
     fld = FMR.concatFold
           $ FMR.mapReduceFold
-          (FMR.unpackFilterOnField @DP.VotesInRace (> 0))
+          (FMR.unpackFilterOnField @DP.VotesInRaceW (> 0))
           (FMR.assignKeysAndData @ks @(DP.CountDataR V.++ DP.PrefDataR))
           (FMR.foldAndAddKey innerFld)
 

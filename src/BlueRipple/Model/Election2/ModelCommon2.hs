@@ -575,7 +575,7 @@ setupAlphaSum prefixM states alphas = do
       serAG <- stateEduRace
       SG.setupAlphaSum (stAG :> ageAG :> sexAG :> eduAG :> raceAG :> erAG :> srAG :> serAG :> TNil)
     MC.St_A_S_E_R_StA_StS_StE_StR_AS_AE_AR_SE_SR_ER_StER -> do
-      stAG <- stateAG_C
+      stAG <- stateAG_NC
       saAG <- stateAgeAG
       ssAG <- stateSexAG
       seAG <- stateEduAG

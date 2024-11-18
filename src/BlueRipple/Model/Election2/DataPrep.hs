@@ -68,9 +68,11 @@ import qualified Frames.SimpleJoins as FJ
 import qualified Frames.Streamly.InCore as FI
 import qualified Frames.Streamly.TH as FS
 import qualified Frames.Streamly.OrMissing as FS
+import qualified Frames.Streamly.Transform as FST
 import qualified Frames.Transform as FT
 import qualified Knit.Effect.AtomicCache as K hiding (retrieveOrMake)
 import qualified Knit.Report as K
+import qualified Knit.Utilities.Streamly as K
 import Prelude hiding (pred)
 
 --import qualified Control.MapReduce as FMR
@@ -477,12 +479,31 @@ cesAddDensity cesYr acs ces = K.wrapPrefix "Election2.DataPrep" $ do
   let fixSingleDistricts :: (F.ElemOf rs GT.StateAbbreviation, F.ElemOf rs GT.CongressionalDistrict, Functor f)
                          =>   f (F.Record rs) -> f (F.Record rs)
       fixSingleDistricts = BR.fixSingleDistricts ("DC" : (BR.atLargeDistrictStates (CCES.cesYear cesYr))) 1
+      fixedACS = fixSingleDistricts acs
       (joined, missing) = FJ.leftJoinWithMissing @(CDKeyR V.++ DCatsR) (fixSingleDistricts ces)
-                          $ withZeros @CDKeyR @DCatsR $ fmap F.rcast $ fixSingleDistricts acs
+                          $ withZeros @CDKeyR @DCatsR $ fmap F.rcast $ fixedACS
   when (not $ null missing) $ do
     BRLC.logFrame $ F.filterFrame ((== "DC") . view GT.stateAbbreviation) acs
     K.knitError $ "cesAddDensity: Missing keys in CES/ACS join: " <> show missing
-  pure $ fmap F.rcast joined
+  K.logLE K.Info "Replacing 0s with CD average"
+  let avgDensityMap = averageCDPWD $ fixedACS
+      getAvgDensity cdk = case M.lookup cdk avgDensityMap of
+        Nothing -> K.errStreamly $ "Failed to find " <> show cdk <> " in average density map: " <> show avgDensityMap
+        Just d -> pure d
+      f r = if (r ^. DT.pWPopPerSqMile == 0)
+            then flip (F.rputField @DT.PWPopPerSqMile) r <$> getAvgDensity (F.rcast @CDKeyR r)
+            else pure r
+  withAvgDensityForZero <- K.streamlyToKnit $ FST.concurrentMapM f joined
+  pure $ fmap F.rcast withAvgDensityForZero
+
+averageCDPWD :: F.FrameRec DDP.ACSa5ByCDR -> Map (F.Record CDKeyR) Double
+averageCDPWD acs = FL.fold (FL.premap keyVal FL.map) $ FL.fold fld acs
+  where keyVal r = (F.rcast @CDKeyR r, r ^. DT.pWPopPerSqMile)
+        fld = FMR.concatFold
+              $ FMR.mapReduceFold
+              FMR.noUnpack
+              (FMR.assignKeysAndData @CDKeyR @[DT.PopCount, DT.PWPopPerSqMile])
+              (FMR.foldAndAddKey $ DT.pwDensityAndPopFldRec DT.Geometric)
 
 cesAddDensity2 :: (K.KnitEffects r)
                => F.FrameRec DDP.ACSa5ByStateR
@@ -615,10 +636,10 @@ weightedFld' ws nF wgtF essF wqtyF =
   let (c, q) = case ws of
         FullWeights -> (FL.premap wgtF FL.sum, FL.premap wqtyF FL.sum)
         CellWeights ->
-          let f r = realToFrac (nF r) * wqtyF r / wgtF r
+          let f r = let x = wgtF r in if x /= 0 then realToFrac (nF r) * wqtyF r / x else 0
           in (realToFrac <$> FL.premap nF FL.sum, FL.premap f FL.sum)
         DesignEffectWeights ->
-          let f r = essF r * wqtyF r / wgtF r
+          let f r =  let x = wgtF r in if x /= 0 then essF r * wqtyF r / x else 0
           in (FL.premap essF FL.sum, FL.premap f FL.sum)
   in (,) <$> c <*> q
 
