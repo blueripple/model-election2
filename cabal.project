@@ -1,4 +1,5 @@
-packages: ./ ~/DataScience/hvega-utils ../data-CES ~/DataScience/haskell-stan/haskell-stan
+packages: ./ ~/DataScience/hvega-utils ../data-CES  ~/DataScience/haskell-stan  ~/BlueRipple/libs/model-demographic
+          --~/DataScience/haskell-stan/haskell-stan-language ~/DataScience/haskell-stan/haskell-stan-functions ~/DataScience/haskell-stan/haskell-stan-builder ~/DataScience/haskell-stan/haskell-stan-building-blocks ~/DataScience/haskell-stan/haskell-stan-runner
 jobs: 4
 with-compiler: ghc
 
@@ -28,8 +29,8 @@ import: ../cabal_repo_imports/data-ACS-PUMS.project
 import: ../cabal_repo_imports/data-CPS-VS.project
 import: ../cabal_repo_imports/data-RDH-voterfiles.project
 import: ../cabal_repo_imports/model-tools.project
-import: ../cabal_repo_imports/model-demographic.project
---import: ../cabal_repo_imports/haskell-stan.project
+--import: ../cabal_repo_imports/model-demographic.project
+import: ../cabal_repo_imports/haskell-stan.project
 import: ../cabal_repo_imports/hs-cmdstan.project
 import: ../cabal_repo_imports/knit-haskell.project
 import: ../cabal_repo_imports/Frames-streamly.project

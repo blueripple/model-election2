@@ -32,9 +32,8 @@ import qualified BlueRipple.Model.Election2.ModelCommon2 as MC2
 import qualified BlueRipple.Data.Small.DataFrames as BRDF
 import qualified BlueRipple.Data.Small.Loaders as BRDF
 import qualified BlueRipple.Data.RDH_Voterfiles as RDH
---import qualified BlueRipple.Configuration as BR
 import qualified BlueRipple.Data.CachingCore as BRCC
-import qualified BlueRipple.Data.LoadersCore as BRLC
+--import qualified BlueRipple.Data.LoadersCore as BRLC
 import qualified BlueRipple.Data.Types.Geographic as GT
 import qualified BlueRipple.Data.Types.Demographic as DT
 import qualified BlueRipple.Data.Types.Election as ET
@@ -135,6 +134,7 @@ cachedPreppedModelData cacheStructure config = K.wrapPrefix "cachedPreppedModelD
 
 runBaseModel ::  forall l r ks a b .
                    (K.KnitEffects r
+                   , Typeable ks
                    , BRCC.CacheEffects r
                    , MC2.ElectionModelC l ks DP.CDKeyR
                    , FSI.RecVec (DP.PSDataR ks)
@@ -398,6 +398,7 @@ runActionModelAH :: forall l ks r a b .
                     (K.KnitEffects r
                     , BRCC.CacheEffects r
                     , ActionModelC l ks
+                    , Typeable ks
                     )
                  => Int
                  -> CacheStructure Text Text
@@ -517,6 +518,7 @@ runPrefModelCPAH :: forall ks r a b .
                   , BRCC.CacheEffects r
                   , PSDataTypeTC ks
                   , PSDataTypePC ks
+                  , Typeable ks
                   )
                  => Int
                  -> CacheStructure Text Text
@@ -582,6 +584,7 @@ runPrefModelAH :: forall l ks r a b .
                   (K.KnitEffects r
                   , BRCC.CacheEffects r
                   , PrefModelC l ks
+                  , Typeable ks
                   )
                => Int
                -> CacheStructure Text Text
@@ -669,6 +672,7 @@ type FullModelC l ks =
   , V.RMap (l V.++ PSResultR)
   , FS.RecFlat (l V.++ PSResultR)
   , Show (F.Record (ks V.++ DP.DCatsR))
+  , Typeable ks
   )
 
 
@@ -805,7 +809,7 @@ allModelsCompChart :: forall ks ks' r b pbase . (K.KnitOne r, BRCC.CacheEffects 
                    -> [MC.Alphas]
                    -> K.Sem r ()
 allModelsCompChart jsonLocations surveyDataBy psByAgg runModel catLabel modelType catText aggs' alphaModels' = do
-  let weightingStyle = DP.CellWeights
+--  let weightingStyle = DP.CellWeights
   allModels <- allModelsCompBy @ks psByAgg runModel catLabel aggs' alphaModels'
   cesSurvey <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.AllSurveyed DP.Both)
   cesSurveyVV <- K.ignoreCacheTimeM $ DP.cesCountedDemPresVotesByCD False (DP.Validated DP.Both)

@@ -67,7 +67,7 @@ import qualified Frames.Constraints as FC
 import qualified Frames.SimpleJoins as FJ
 import qualified Frames.Streamly.InCore as FI
 import qualified Frames.Streamly.TH as FS
-import qualified Frames.Streamly.OrMissing as FS
+--import qualified Frames.Streamly.OrMissing as FS
 import qualified Frames.Streamly.Transform as FST
 import qualified Frames.Transform as FT
 import qualified Knit.Effect.AtomicCache as K hiding (retrieveOrMake)
@@ -680,9 +680,9 @@ countCESVotesF :: (FC.ElemsOf rs [CCES.VRegistrationC, CCES.PartisanId3, CCES.Pa
                   (F.Record rs)
                   (F.Record (CountDataR V.++ PrefDataR))
 countCESVotesF sp votePartyMD =
-  let vote (MT.MaybeData x) = maybe False (const True) x
-      safeDiv x y = if y /= 0 then x / y else 0
-      voted = CCES.voted . view CCES.vTurnoutC
+  let --vote (MT.MaybeData x) = maybe False (const True) x
+    -- safeDiv x y = if y /= 0 then x / y else 0
+      voted'' = CCES.voted . view CCES.vTurnoutC
       vote2p (MT.MaybeData x) = maybe False (\y -> y == ET.Democratic || y == ET.Republican) x
       dVote (MT.MaybeData x) = maybe False (== ET.Democratic) x
       rVote (MT.MaybeData x) = maybe False (== ET.Republican) x
@@ -706,7 +706,7 @@ countCESVotesF sp votePartyMD =
       surveyedF = FL.length
       registeredF = FL.prefilter reg' FL.length
       registered2pF = FL.prefilter reg2p FL.length
-      votedF = FL.prefilter voted surveyedF
+      votedF = FL.prefilter voted'' surveyedF
       votesF = FL.prefilter (vote2p . votePartyMD) votedF
       dVotesF = FL.prefilter (dVote . votePartyMD) votedF
       rVotesF = FL.prefilter (rVote . votePartyMD) votedF
@@ -718,7 +718,7 @@ countCESVotesF sp votePartyMD =
 --      wQtyF = wfQuantity $ weightedFolds weightingStyle wgt
       wBoolF = wgtdBoolFld wgt --wfBoolQty $  weightedFolds weightingStyle wgt
       wRegF = wBoolF reg'
-      wVotedF = wBoolF voted
+      wVotedF = wBoolF voted''
       w2pVotesF = wBoolF (vote2p . votePartyMD)
       ess2pVotesF = FL.prefilter (vote2p . votePartyMD) eSSsurveyedF
       wdVotesF = wBoolF (dVote . votePartyMD)
