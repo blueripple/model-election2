@@ -677,6 +677,8 @@ postStratificationWeights :: forall k md . (Typeable psRow)
                           => S.RowTypeTag psRow -> (psRow -> Int) -> S.StanBuilderM md (DP.PSData k) S.IntArrayE
 postStratificationWeights psDataTag psWgt = S.addCountData psDataTag "PSWgts" psWgt
 -}
+
+
 postStratificationProbsCW :: forall l psRow md gq . (Typeable psRow
                                                  --                                             , F.ElemOf (DP.PSDataR k) DT.PopCount
                                                  --                                             , DP.LPredictorsR F.⊆ DP.PSDataR k

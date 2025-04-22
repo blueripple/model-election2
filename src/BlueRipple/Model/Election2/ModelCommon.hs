@@ -163,10 +163,7 @@ instance ModelCategoryV (PrefConfig Vote b) where
 type GroupsR = GT.StateAbbreviation ': DP.DCatsR
 
 groups :: Foldable g => g Text -> [DSum.DSum S.GroupTypeTag (S.GroupFromData (F.Record GroupsR))]
-groups states = [stateG DSum.:=>
-                 S.GroupFromData (view GT.stateAbbreviation)
-                 (S.makeIndexFromFoldable show (view GT.stateAbbreviation) states)
-                 (S.dataToIntMapFromFoldable (view GT.stateAbbreviation) states)
+groups states = [stateG DSum.:=> S.groupFromDataFoldable (view GT.stateAbbreviation) states
                 , ageG DSum.:=> S.groupFromDataEnum (view DT.age5C)
                 , sexG DSum.:=> S.groupFromDataEnum (view DT.sexC)
                 , eduG DSum.:=> S.groupFromDataEnum (view DT.education4C)
@@ -209,21 +206,22 @@ psGroupBuilder :: forall g k l .
                -> S.StanDataBuilderEff S.GQDataT (DP.PSData k) (S.RowTypeTag (F.Record (DP.PSDataR k)))
 psGroupBuilder states psKeys = do
   let groups' = groups states
-      psGtt = psGroupTag @l
       psIDT :: S.InputDataType S.GQDataT (DP.PSData k) = S.GQData
   -- rows with 0 weight add nothing to the sums but add space to json and time to computation
   psTag <- S.addData "PSData" psIDT (S.ToFoldable $ F.filterFrame ((> 0) . view DT.popCount) . DP.unPSData)
+  psGtt <- fst <$> S.addGroup @(F.Record l) psIDT "PSGrp" (length psKeys)
   S.addGroupIndexForData psIDT psGtt psTag $ S.makeIndexFromFoldable show F.rcast psKeys
   S.addGroupIntMapForData psIDT psGtt psTag $ S.dataToIntMapFromFoldable F.rcast psKeys
   S.addGroupIndexes psIDT psTag F.rcast groups'
   pure psTag
+
 -- design matrix rows
 tDesignMatrixRow_0 :: S.DesignMatrixRow (F.Record DP.LPredictorsR)
 tDesignMatrixRow_0 = S.DesignMatrixRow "0" []
 
 
-tDesignMatrixRow_d :: S.DesignMatrixRow (F.Record DP.LPredictorsR)
-tDesignMatrixRow_d = S.DesignMatrixRow "d" [dRP]
+tDesignMatrixRow_d :: Text -> S.DesignMatrixRow (F.Record DP.LPredictorsR)
+tDesignMatrixRow_d t = S.DesignMatrixRow ("d" <> t) [dRP]
   where
     dRP = S.DesignMatrixRowPart "logDensity" 1 (VU.singleton . safeLog . view DT.pWPopPerSqMile)
 

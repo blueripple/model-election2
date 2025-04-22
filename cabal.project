@@ -1,4 +1,4 @@
-packages: ./ ~/DataScience/hvega-utils ../data-CES  ~/DataScience/haskell-stan  ~/BlueRipple/libs/model-demographic
+packages: ./ ~/DataScience/hvega-utils ../data-CES   ~/BlueRipple/libs/model-demographic
           --~/DataScience/haskell-stan/haskell-stan-language ~/DataScience/haskell-stan/haskell-stan-functions ~/DataScience/haskell-stan/haskell-stan-builder ~/DataScience/haskell-stan/haskell-stan-building-blocks ~/DataScience/haskell-stan/haskell-stan-runner
 jobs: 4
 with-compiler: ghc

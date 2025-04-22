@@ -672,6 +672,22 @@ weightedFolds ws wgt = WeightedFolds cF qF where
       in (essF, ewQtyF)
 -}
 
+cesWeight :: FC.ElemsOf rs [CCES.CESPreWeight, CCES.CESPostWeight, CCES.CESVVPreWeight, CCES.CESVVPostWeight ]
+          => SurveyPortion -> F.Record rs -> Double
+cesWeight sp = case sp of
+  AllSurveyed sw -> case sw of
+    Pre -> view CCES.cESPreWeight
+    Both -> view CCES.cESPostWeight
+  Validated sw -> case sw of
+    Pre -> FS.orMissing 0 id . view CCES.cESVVPreWeight
+    Both -> FS.orMissing 0 id . view CCES.cESVVPostWeight
+  VRegistered sw -> case sw of
+    Pre -> FS.orMissing 0 id . view CCES.cESVVPreWeight
+    Both -> FS.orMissing 0 id . view CCES.cESVVPostWeight
+  VVoted sw -> case sw of
+    Pre -> FS.orMissing 0 id . view CCES.cESVVPreWeight
+    Both -> FS.orMissing 0 id . view CCES.cESVVPostWeight
+
 countCESVotesF :: (FC.ElemsOf rs [CCES.VRegistrationC, CCES.PartisanId3, CCES.PartisanId7, CCES.VTurnoutC
                                  , CCES.CESPreWeight, CCES.CESPostWeight, CCES.CESVVPreWeight, CCES.CESVVPostWeight])
                => SurveyPortion
@@ -690,19 +706,7 @@ countCESVotesF sp votePartyMD =
       reg2p r = reg' r && (pidDem r || pidRep r) -- for 2-party pref of reg denominator
       reg2pD r = reg2p r && pidDem r
       reg2pR r = reg2p r && pidRep r
-      wgt = case sp of
-        AllSurveyed sw -> case sw of
-          Pre -> view CCES.cESPreWeight
-          Both -> view CCES.cESPostWeight
-        Validated sw -> case sw of
-          Pre -> FS.orMissing 0 id . view CCES.cESVVPreWeight
-          Both -> FS.orMissing 0 id . view CCES.cESVVPostWeight
-        VRegistered sw -> case sw of
-          Pre -> FS.orMissing 0 id . view CCES.cESVVPreWeight
-          Both -> FS.orMissing 0 id . view CCES.cESVVPostWeight
-        VVoted sw -> case sw of
-          Pre -> FS.orMissing 0 id . view CCES.cESVVPreWeight
-          Both -> FS.orMissing 0 id . view CCES.cESVVPostWeight
+      wgt = cesWeight sp
       surveyedF = FL.length
       registeredF = FL.prefilter reg' FL.length
       registered2pF = FL.prefilter reg2p FL.length
@@ -802,6 +806,15 @@ surveyPortionText (Validated sw) = "vv" <> surveyWaveText sw
 surveyPortionText (VRegistered sw) = "vreg" <> surveyWaveText sw
 surveyPortionText (VVoted sw) = "vvote" <> surveyWaveText sw
 
+
+cesMRUnpack :: FC.ElemsOf rs '[BR.Year, CCES.VRegistrationC, CCES.VTurnoutC]
+            => Int -> SurveyPortion -> FMR.Unpack (F.Record rs) (F.Record rs)
+cesMRUnpack earliestYear sp = case sp of
+  AllSurveyed _ -> FMR.unpackFilterOnField @BR.Year (>= earliestYear)
+  Validated _ -> FMR.unpackFilterRow (\r -> r ^. BR.year >= earliestYear && r ^. CCES.vRegistrationC /= CCES.VR_Missing)
+  VRegistered _ -> FMR.unpackFilterRow (\r -> r ^. BR.year >= earliestYear && r ^. CCES.vRegistrationC == CCES.VR_Active)
+  VVoted _ -> FMR.unpackFilterRow (\r -> r ^. BR.year >= earliestYear && r ^. CCES.vRegistrationC == CCES.VR_Active && r ^. CCES.vTurnoutC /= CCES.VT_Missing)
+
 -- using each year's common content
 cesMR ∷ forall lk rs f m .
         (Foldable f, Functor f, Monad m
@@ -820,16 +833,10 @@ cesMR ∷ forall lk rs f m .
 cesMR sp earliestYear votePartyMD =
   fmap (F.filterFrame ((/= 0) . view surveyWeight))
   . BRF.frameCompactMR
-  unpack
+  (cesMRUnpack earliestYear sp)
   (FMR.assignKeysAndData @(lk V.++ DCatsR) @rs)
   (countCESVotesF sp votePartyMD)
   . fmap (cesAddEducation4 . cesRecodeHispanic)
-  where
-    unpack = case sp of
-      AllSurveyed _ -> FMR.unpackFilterOnField @BR.Year (>= earliestYear)
-      Validated _ -> FMR.unpackFilterRow (\r -> r ^. BR.year >= earliestYear && r ^. CCES.vRegistrationC /= CCES.VR_Missing)
-      VRegistered _ -> FMR.unpackFilterRow (\r -> r ^. BR.year >= earliestYear && r ^. CCES.vRegistrationC == CCES.VR_Active)
-      VVoted _ -> FMR.unpackFilterRow (\r -> r ^. BR.year >= earliestYear && r ^. CCES.vRegistrationC == CCES.VR_Active && r ^. CCES.vTurnoutC /= CCES.VT_Missing)
 
 -- vote targets
 data DRAOverride =
