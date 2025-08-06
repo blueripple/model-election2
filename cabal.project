@@ -1,19 +1,9 @@
-packages: ./ ~/DataScience/hvega-utils ../data-CES   ~/BlueRipple/libs/model-demographic
+packages: ./
           --~/DataScience/haskell-stan/haskell-stan-language ~/DataScience/haskell-stan/haskell-stan-functions ~/DataScience/haskell-stan/haskell-stan-builder ~/DataScience/haskell-stan/haskell-stan-building-blocks ~/DataScience/haskell-stan/haskell-stan-runner
 jobs: 4
 with-compiler: ghc
 
-allow-newer: polysemy-zoo:ghc-prim, streamly-core
-           , freer-simple:template-haskell
-           , foldl-statistics:hashable, foldl-statistics:profunctors
---           , cereal-time:time
---           , heidi:base
---           , generic-trie:base
-           , streamly-bytestring:streamly-core
-           , nonlinear-optimization:primitive, nonlinear-optimization:vector
-           , bytestring
-           , base
-           , time
+allow-newer: base, ghc-prim, template-haskell, time, bytestring, containers, hashable, lens, profunctors, primitive, text, vector, constraints, extra
 
 flags: +streamly9
 
@@ -25,11 +15,11 @@ import: ../cabal_repo_imports/data-loading.project
 import: ../cabal_repo_imports/data-visualizations.project
 import: ../cabal_repo_imports/data-ACS-Tables.project
 import: ../cabal_repo_imports/data-ACS-PUMS.project
---import: ../cabal_repo_imports/data-CES.project
+import: ../cabal_repo_imports/data-CES.project
 import: ../cabal_repo_imports/data-CPS-VS.project
 import: ../cabal_repo_imports/data-RDH-voterfiles.project
 import: ../cabal_repo_imports/model-tools.project
---import: ../cabal_repo_imports/model-demographic.project
+import: ../cabal_repo_imports/model-demographic.project
 import: ../cabal_repo_imports/haskell-stan.project
 import: ../cabal_repo_imports/hs-cmdstan.project
 import: ../cabal_repo_imports/knit-haskell.project
@@ -39,8 +29,9 @@ import: ../cabal_repo_imports/Frames-utils.project
 import: ../cabal_repo_imports/Frames-hvega.project
 import: ../cabal_repo_imports/data-science-utils.project
 import: ../cabal_repo_imports/nlopt-haskell.project
---import: ../cabal_repo_imports/hvega-utils.project
+import: ../cabal_repo_imports/hvega-utils.project
 import: ../cabal_repo_imports/map-reduce-folds.project
 import: ../cabal_repo_imports/Frames-map-reduce.project
 import: ../cabal_repo_imports/heidi.project
 import: ../cabal_repo_imports/hTensor.project
+import: ../cabal_repo_imports/dependent-hashmap.project
