@@ -326,9 +326,11 @@ instance (V.RMap l, Ord (F.Record l), FS.RecFlat l, Flat.Flat a) => Flat.Flat (P
 
 psMapToFrame :: forall t l a . (V.KnownField t, V.Snd t ~ a, FSI.RecVec (l V.++ '[t]))
              => PSMap l a -> F.FrameRec (l V.++ '[t])
-psMapToFrame (PSMap m) = F.toFrame $ fmap toRec $ M.toList m
-  where
-    toRec (l, a) = l F.<+> FT.recordSingleton @t a
+psMapToFrame (PSMap m) = psMapRecToFrame $ PSMap $ fmap (FT.recordSingleton @t) m
+
+psMapRecToFrame :: FSI.RecVec (l V.++ rs) =>  PSMap l (F.Record rs) -> F.FrameRec (l V.++ rs)
+psMapRecToFrame (PSMap m) = F.toFrame $ fmap toRec $ M.toList m
+  where toRec (l, r) = l F.<+> r
 
 {-
 -- NB: often l ~ k, e.g., for predicting district turnout/preference
