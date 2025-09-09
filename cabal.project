@@ -1,9 +1,16 @@
 packages: ./
-          --~/DataScience/haskell-stan/haskell-stan-language ~/DataScience/haskell-stan/haskell-stan-functions ~/DataScience/haskell-stan/haskell-stan-builder ~/DataScience/haskell-stan/haskell-stan-building-blocks ~/DataScience/haskell-stan/haskell-stan-runner
 jobs: 4
 with-compiler: ghc
 
-allow-newer: base, ghc-prim, template-haskell, time, bytestring, containers, hashable, lens, profunctors, primitive, text, vector, constraints, extra
+
+allow-newer: base, ghc-prim, bytestring, time, primitive, containers, constraints
+           , freer-simple:template-haskell
+           , polysemy-zoo:text
+           , foldl-statistics:hashable, foldl-statistics:profunctors
+           , cereal-time:time
+           , pipes-text:text
+           , tsne:random
+           , nonlinear-optimization:vector
 
 flags: +streamly9
 
