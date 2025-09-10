@@ -450,7 +450,7 @@ type PSDataTypePC ks = ( FJ.CanLeftJoinWithMissing3 StateAndCats (DP.PSDataR ks)
 -- For registration we use partisan id as the preference since some states don't have voters register for a particular party
 -- And we use 2-party share, D / (D + R) rather than D / (D + R + O)
 data PrefDTargetCategory (r :: P.EffectRow) where
-  RegDTargets :: PrefDTargetCategory '[]
+  RegDTargets :: PrefDTargetCategory r
   VoteDTargets :: DP.DShareTargetConfig r -> PrefDTargetCategory r
   CESImpliedDVotes :: K.ActionWithCacheTime r (F.FrameRec (DP.StateKeyR V.++ DP.DCatsR V.++ DP.CountDataR V.++ DP.PrefDataR)) -> PrefDTargetCategory r
   CESImpliedDPID :: K.ActionWithCacheTime r (F.FrameRec (DP.StateKeyR V.++ DP.DCatsR V.++ DP.CountDataR V.++ DP.PrefDataR)) -> PrefDTargetCategory r
